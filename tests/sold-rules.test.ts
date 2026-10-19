@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { backends } from "./helpers";
 import { classifySold, endMode, isRelist, relistBlocked } from "../src/lib/jobs/sold";
+import { computeNeedsAction } from "../src/lib/jobs/needs-action";
 import { buildActionRequest } from "../src/lib/ext/protocol";
 import { processListingsReport, processScanReport } from "../src/lib/jobs/sale-detection";
 import { createJob } from "../src/lib/jobs/api";
@@ -93,5 +94,16 @@ describe("on the mock store", () => {
     const other = await svc.store.items.create({ title: "Hat", sku: "S2", status: "listed" });
     await svc.store.listings.upsert({ itemId: other.id, marketplace: "poshmark", externalId: "b".repeat(24), url: null, price: 5, status: "active", listedAt: null, endedAt: null, source: "manual" });
     expect(await processListingsReport(svc.store, { marketplace: "poshmark", externalIds: ["b".repeat(24)], source: "extension" })).toEqual({ seen: 1, flagged: 0 });
+  });
+});
+
+describe("needs-action rule 4 after the item is removed", () => {
+  it("drops delete_fallback / sold_seen_live flags whose item no longer exists (log row kept, item_id nulled)", () => {
+    const e = (itemId: string | null, ref: string, event: "delete_fallback" | "sold_seen_live") =>
+      ({ id: ref, userId: "u", itemId, listingId: null, marketplace: "poshmark", at: "2026-10-19T00:00:00Z", event, source: "extension", jobId: null, detail: null, ref }) as const;
+    const item = { id: "i1", sku: "S1", title: "Hat" } as unknown as Item;
+    const out = computeNeedsAction({ items: [item], listings: [], sales: [], jobs: [], now: new Date("2026-10-19T01:00:00Z"),
+      syncLog: [e("i1", "sold_again:1", "sold_seen_live"), e(null, "sold_again:2", "sold_seen_live"), e("gone", "delete_fallback:x", "delete_fallback")] });
+    expect(out.map((n) => n.key)).toEqual(["sold_again:1"]);
   });
 });

@@ -94,7 +94,9 @@ export function computeNeedsAction({ items, listings, sales, jobs, syncLog, now 
     if ((e.event !== "delete_fallback" && e.event !== "sold_seen_live") || !e.ref || seen.has(e.ref)) continue;
     seen.add(e.ref);
     if (e.listingId && (clearedAt.get(e.listingId) ?? "") > e.at) continue;
+    // Item removed from Shadow Sync (the log keeps the row with item_id nulled): nothing left to act on.
     const item = e.itemId ? itemById.get(e.itemId) : undefined;
+    if (!item) continue;
     const l = e.listingId ? listingById.get(e.listingId) : undefined;
     push({ key: e.ref, kind: "sold_still_listed", itemId: e.itemId, sku: item?.sku ?? null, title: item?.title ?? null, marketplace: e.marketplace, listingId: e.listingId,
       jobId: e.jobId, url: l?.url ?? null, since: e.at,

@@ -292,21 +292,24 @@ describe.each(targets)("job queue contract: $name", (b) => {
 
   it("needs-action: a failed delist shows, Retry-then-success clears it, mark-delisted ends the listing, ignore hides it", async () => {
     const { store, item, listing } = await fixture();
+    // The real project's item_sync_log is append-only, so earlier runs leave entries (e.g. unmatched/cancelled sales) behind: ignore those.
+    const residue = new Set((await store.needsAction.list()).map((e) => e.key));
+    const naList = async () => (await store.needsAction.list()).filter((e) => !residue.has(e.key));
     const sale = await store.sales.record({ itemId: item.id, marketplace: "ebay", orderId: `N-${Math.random()}`, soldAt: "2026-10-18", price: 5, fees: null, promo: null, shipProvider: null, shipCost: null, source: "api" });
     const job = (await store.jobs.enqueue({ ...delist(item.id, listing.id, `delist:${listing.id}:${sale.id}`), jobType: "mark_sold", nextRunAt: ago(MIN).toISOString() })).job;
     await store.jobs.claim({ executor: "extension" }); await store.jobs.start(job.id);
     await completeJob(store, job.id, { kind: "hard", code: "rejected", message: "Listing not found" });
-    let na = await store.needsAction.list();
+    let na = await naList();
     expect(na).toHaveLength(1);
     expect(na[0]).toMatchObject({ kind: "delist_failed", itemId: item.id, listingId: listing.id, jobId: job.id, sku: "J1", actions: ["retry", "open_listing", "mark_delisted", "ignore"] });
     expect((await store.itemSyncLog.list({ itemId: item.id })).map((e) => e.event)).toContain("delist_failed");
 
     await store.jobs.retry(job.id);
-    expect(await store.needsAction.list()).toEqual([]);                        // queued again and fresh: in progress
+    expect(await naList()).toEqual([]);                        // queued again and fresh: in progress
     await store.jobs.claim({ executor: "extension" }); await store.jobs.start(job.id);
     await completeJob(store, job.id, { kind: "success" });
     expect((await store.listings.listForItem(item.id))[0].status).toBe("sold"); // success closes the listing
-    expect(await store.needsAction.list()).toEqual([]);                        // empties itself once confirmed
+    expect(await naList()).toEqual([]);                        // empties itself once confirmed
     expect((await store.itemSyncLog.list({ itemId: item.id })).map((e) => e.event)).toContain("marked_sold");
 
     // second listing: ended by hand
@@ -314,10 +317,10 @@ describe.each(targets)("job queue contract: $name", (b) => {
     const j2 = (await store.jobs.enqueue({ marketplace: "depop", jobType: "mark_sold", executor: "extension", itemId: item.id, listingId: l2.id, idempotencyKey: `delist:${l2.id}:${sale.id}`, nextRunAt: ago(MIN).toISOString() })).job;
     await store.jobs.claim({ executor: "extension" }); await store.jobs.start(j2.id);
     await completeJob(store, j2.id, { kind: "hard", code: "rejected", message: "no" });
-    na = await store.needsAction.list();
+    na = await naList();
     expect(na.map((e) => e.listingId)).toEqual([l2.id]);
     await store.needsAction.ignore(na[0].key);
-    expect(await store.needsAction.list()).toEqual([]);
+    expect(await naList()).toEqual([]);
 
     const j3 = await store.listings.upsert({ itemId: item.id, marketplace: "grailed", externalId: null, url: null, price: 1, status: "active", listedAt: null, endedAt: null, source: "manual" });
     const open = (await store.jobs.enqueue({ marketplace: "grailed", jobType: "mark_sold", executor: "extension", itemId: item.id, listingId: j3.id, idempotencyKey: `delist:${j3.id}:${sale.id}` })).job;

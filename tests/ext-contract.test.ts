@@ -188,7 +188,8 @@ describe.each(targets)("device API contract: $name", (b) => {
     const sales = [
       { orderId: "P-1", soldAt: "2026-10-18", price: 25, externalListingId: "a".repeat(24), title: "Polo" },
       { orderId: "P-2", soldAt: "2026-10-18", price: 9, sku: "nope" },
-      { orderId: "P-3", soldAt: "2026-10-17", price: 5, cancelled: true },
+      // Unique per run: the real project's item_sync_log is append-only, so a fixed order id would already be "logged" from an earlier run.
+      { orderId: `P-3-${Date.now()}`, soldAt: "2026-10-17", price: 5, cancelled: true },
     ];
     const r = await s.device.scanReport(token, { marketplace: "poshmark", sales, nextCursor: "2026-10-18T10:00:00.000Z" });
     expect(r).toMatchObject({ ok: true, stored: 2, duplicates: 0, jobsCreated: 1, unmatched: 1, cancelled: 1, cursorAdvanced: true });
