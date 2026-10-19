@@ -6,8 +6,10 @@ import { proxySession } from "@/lib/data";
 const PUBLIC = ["/login", "/signup"];
 
 export async function proxy(req: NextRequest) {
-  const { response, signedIn } = await proxySession(req);
   const { pathname } = req.nextUrl;
+  // The extension's endpoints never use a user session (device token only), so the session is not even read for them.
+  if (pathname.startsWith("/api/v1/ext/")) return NextResponse.next();
+  const { response, signedIn } = await proxySession(req);
   const isPublic = PUBLIC.some((p) => pathname === p);
   // The worker endpoint has no user: it is protected by CRON_SECRET inside the route instead.
   if (pathname.startsWith("/api/cron/")) return response ?? NextResponse.next();

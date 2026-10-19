@@ -6,6 +6,7 @@ import type {
   Job, JobEvent, JobExecutor, JobOutcome, JobStatus, Listing, Marketplace, MarketplaceConnection, MarketplaceLoginState,
   NeedsActionEntry, NewConnection, NewDevice, NewItem, NewItemSyncLogEntry, NewJob, NewListing, NewPhoto, NewSale,
   NewSyncLogEntry, Photo, Profile, Sale, ScanCursor, SyncLogEntry, WorkerRun,
+  AlertPrefs, ExtPollInput, ExtPollResult, ExtScanNext, ExtScanResult, ExtScanSale,
 } from "./types";
 
 /** Minimal cookie access so auth works in Next, in tests, and in the proxy. */
@@ -110,6 +111,17 @@ export interface DataStore {
     setPaused(id: string, paused: boolean): Promise<ExtensionDevice>;
     revoke(id: string): Promise<ExtensionDevice>;
     marketplaceState(): Promise<MarketplaceLoginState[]>;
+    /** Kill switch for one marketplace on one device. Resuming also clears the security-check streak. (0006) */
+    setMarketplacePaused(deviceId: string, marketplace: Marketplace, paused: boolean): Promise<MarketplaceLoginState>;
+  };
+  /** Extension pairing, dashboard side (0006). The caller makes the code (lib/ext/tokens); only its hash is stored. Valid 5 minutes, single use. */
+  pairing: {
+    start(code: string, now?: Date): Promise<{ expiresAt: string }>;
+  };
+  /** Settings > Alerts (0006). Stored preference only; no SMS provider is connected. */
+  alerts: {
+    get(): Promise<AlertPrefs>;
+    update(patch: Partial<Pick<AlertPrefs, "smsEnabled" | "phone">>): Promise<AlertPrefs>;
   };
   /** Server-held sales-scan position per connection (spec 3A). `scopeKey` defaults to "default". */
   cursors: {
@@ -151,8 +163,30 @@ export interface DataStore {
   };
 }
 
+/**
+ * The extension's side (spec 4 and 5): every call carries the RAW device token, never a user session. The token is hashed (sha256) and
+ * matched to a device that is not revoked; every call is confined to that device's user. Paused devices may only poll (heartbeat).
+ * Supabase: token-keyed SECURITY DEFINER functions in migration 0006 (no service-role key). Throws DeviceAuthError.
+ */
+export interface DeviceGateway {
+  /** Swap a pairing code (from the dashboard) for a device; `token` is the new raw device token made by the caller. */
+  pairComplete(input: { code: string; token: string; label: string; extensionVersion: string; now?: Date }): Promise<{ deviceId: string; label: string }>;
+  /** Heartbeat + signed-in states + claim up to `limit` jobs (one per ready marketplace, delist / mark_sold first). */
+  poll(token: string, input: ExtPollInput): Promise<ExtPollResult>;
+  /** Server-held cursor for this device's scan of one marketplace (starts at "now" on first use). */
+  scanNext(token: string, marketplace: Marketplace, now?: Date): Promise<ExtScanNext>;
+  /** Store the sales, create delist / mark_sold jobs, and only then move the cursor (spec 3A). */
+  scanReport(token: string, report: { marketplace: Marketplace; sales: ExtScanSale[]; nextCursor: string | null }, now?: Date): Promise<ExtScanResult>;
+  jobStart(token: string, jobId: string, now?: Date): Promise<Job>;
+  jobProgress(token: string, jobId: string, message: string): Promise<void>;
+  jobExtend(token: string, jobId: string, now?: Date): Promise<Job>;
+  /** The server turns the outcome into the next state (state machine) and applies side effects; 2 security checks in a row pause that marketplace. */
+  jobResult(token: string, jobId: string, outcome: JobOutcome, now?: Date): Promise<Job>;
+}
+
 export interface Services {
   auth: AuthService;
   store: DataStore;
   storage: StorageService;
+  device: DeviceGateway;
 }

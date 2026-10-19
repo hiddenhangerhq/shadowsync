@@ -9,3 +9,5 @@ next-env.d.ts
 .vercel
 shots
 .env*
+extension/dist
+.manifest.tmp.mjs

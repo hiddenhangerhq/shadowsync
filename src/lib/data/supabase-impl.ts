@@ -1,12 +1,13 @@
 // Supabase implementation. THE ONLY FILE IN THE APP THAT IMPORTS @supabase/*.
 // Exercised by the shared contract suite with RUN_SUPABASE=1 (see tests/helpers.ts). DATA_BACKEND=supabase selects it.
 import { createServerClient } from "@supabase/ssr";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
-import type { CookieJar, DataStore, Services, StorageService, AuthService } from "./interfaces";
+import type { CookieJar, DataStore, DeviceGateway, Services, StorageService, AuthService } from "./interfaces";
 import {
-  CREDIT_COSTS, InsufficientCreditsError, ITEM_STATUSES, JOB_STATUSES, SchemaMissingError, SOURCE_PRIORITY,
+  CREDIT_COSTS, DeviceAuthError, InsufficientCreditsError, ITEM_STATUSES, JOB_STATUSES, SchemaMissingError, SOURCE_PRIORITY,
+  type DeviceErrorCode, type Marketplace,
   type AuthUser, type ExtensionDevice, type ItemStatus, type Job, type JobEvent, type MarketplaceLoginState,
 } from "./types";
 import * as sm from "../jobs/state-machine";
@@ -54,6 +55,22 @@ const MISSING_CODES = new Set(["42P01", "42883", "PGRST205", "PGRST202"]);
 const raise = (e: { message: string; code?: string }): never => {
   if ((e.code && MISSING_CODES.has(e.code)) || /could not find the (table|function)|relation .* does not exist/i.test(e.message)) throw new SchemaMissingError();
   throw new Error(friendly(e));
+};
+// Migration 0006 (extension pairing, device API, kill switch, alerts). Device errors come back as "ext:<code>" from the SQL functions.
+const MISSING_0006 = new Set([...MISSING_CODES, "42703", "PGRST204"]);
+const raise6 = (e: { message: string; code?: string }): never => {
+  const m = /ext:([a-z_]+)/.exec(e.message);
+  if (m) throw new DeviceAuthError(m[1] as DeviceErrorCode);
+  const t = /illegal_transition:([a-z_]+)->([a-z_]+)/.exec(e.message);
+  if (t) throw new sm.IllegalTransitionError(t[1] as Job["status"], t[2] as Job["status"]);
+  if ((e.code && MISSING_0006.has(e.code)) || /could not find the (table|function)|relation .* does not exist|column .* does not exist/i.test(e.message)) {
+    throw new SchemaMissingError("extension pairing and device API", "0006");
+  }
+  throw new Error(friendly(e));
+};
+const must6 = <T,>(r: { data: T | null; error: { message: string; code?: string } | null }): T => {
+  if (r.error) raise6(r.error);
+  return r.data as T;
 };
 const must = <T,>(r: { data: T | null; error: { message: string; code?: string } | null }): T => {
   if (r.error) raise(r.error);
@@ -306,8 +323,43 @@ export function createSupabaseServices(jar: CookieJar): Services {
       async marketplaceState() {
         return (await list<Row>("extension_marketplace_state")).map((r) => {
           const { userId, ...rest } = normTs(r) as Row; void userId;
-          return rest as unknown as MarketplaceLoginState;
+          // Before 0006 the kill-switch columns do not exist yet.
+          return { paused: false, pausedReason: null, challengeStreak: 0, ...rest } as unknown as MarketplaceLoginState;
         });
+      },
+      async setMarketplacePaused(deviceId, marketplace, paused) {
+        const d = await getDevice(deviceId);
+        const patch = { paused, paused_reason: paused ? "Paused by you" : null, challenge_streak: 0 };
+        let rows = must6(await sb.from("extension_marketplace_state").update(patch).eq("device_id", d.id).eq("marketplace", marketplace).select()) as Row[];
+        if (!rows.length) {
+          rows = [must6(await sb.from("extension_marketplace_state")
+            .insert({ device_id: d.id, marketplace, user_id: d.userId, logged_in: false, checked_at: new Date().toISOString(), ...patch }).select().single()) as Row];
+        }
+        const { userId, ...rest } = normTs(fromRow<Row>(rows[0])) as Row; void userId;
+        return rest as unknown as MarketplaceLoginState;
+      },
+    },
+    pairing: {
+      async start(code) {
+        await needSession();
+        const r = await sb.rpc("ext_pair_start", { p_code: code });
+        if (r.error) raise6(r.error);
+        return { expiresAt: new Date(r.data as string).toISOString() };
+      },
+    },
+    alerts: {
+      async get() {
+        await needSession();
+        const r = must6(await sb.from("alert_prefs").select("*").maybeSingle()) as Row | null;
+        return r ? { smsEnabled: !!r.sms_enabled, phone: (r.phone as string | null) ?? null, updatedAt: new Date(r.updated_at as string).toISOString() } : { smsEnabled: false, phone: null, updatedAt: null };
+      },
+      async update(patch) {
+        const userId = await uid();
+        const row: Row = { user_id: userId, updated_at: new Date().toISOString() };
+        if (patch.smsEnabled !== undefined) row.sms_enabled = patch.smsEnabled;
+        if (patch.phone !== undefined) row.phone = patch.phone;
+        const r = must6(await sb.from("alert_prefs").upsert(row, { onConflict: "user_id" }).select().single()) as Row;
+        return { smsEnabled: !!r.sms_enabled, phone: (r.phone as string | null) ?? null, updatedAt: new Date(r.updated_at as string).toISOString() };
       },
     },
     cursors: {
@@ -392,7 +444,68 @@ export function createSupabaseServices(jar: CookieJar): Services {
     async remove(paths) { if (paths.length) await sb.storage.from(bucket).remove(paths); },
   };
 
-  return { auth, store, storage };
+  return { auth, store, storage, device: createDeviceGateway() };
+}
+
+/**
+ * The extension's side (0006): a client with NO user session (anon key only). Every call passes the raw device token to a token-keyed
+ * SECURITY DEFINER function, which hashes it and works only on that device's user's rows. No service-role key is used anywhere.
+ */
+function createDeviceGateway(): DeviceGateway {
+  const { url, key } = env();
+  const anon = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
+  const rpc = async <T,>(fn: string, args: Row): Promise<T> => must6(await anon.rpc(fn, args)) as T;
+  const job = (r: Row) => normTs(fromRow<Row>(r)) as unknown as Job;
+  return {
+    async pairComplete({ code, token, label, extensionVersion }) {
+      const r = await rpc<Row>("ext_pair_complete", { p_code: code, p_token: token, p_label: label, p_version: extensionVersion });
+      if (r.error) throw new DeviceAuthError(r.error as DeviceErrorCode, "That code is wrong, used or expired. Make a new one in Settings > Extension.");
+      return { deviceId: r.device_id as string, label: r.label as string };
+    },
+    async poll(token, input) {
+      const r = await rpc<Row>("ext_poll", {
+        p_token: token, p_version: input.extensionVersion, p_states: input.marketplaces ?? {}, p_ready: input.ready ?? [], p_limit: input.limit ?? 3,
+      });
+      const dev = r.device as Row;
+      return {
+        device: { id: dev.id as string, label: dev.label as string, paused: !!dev.paused },
+        requeued: Number(r.requeued ?? 0),
+        marketplaces: (r.marketplaces as Row[]).map((m) => ({ marketplace: m.marketplace as Marketplace, loggedIn: !!m.logged_in, paused: !!m.paused, pausedReason: (m.paused_reason as string | null) ?? null })),
+        jobs: (r.jobs as Row[]).map((x) => {
+          const l = x.listing as Row | null, it = x.item as Row | null;
+          return {
+            job: job(x.job as Row),
+            listing: l ? { externalId: (l.external_id as string | null) ?? null, url: (l.url as string | null) ?? null } : null,
+            item: it ? {
+              title: it.title as string, description: (it.description as string | null) ?? null, brand: (it.brand as string | null) ?? null, size: (it.size as string | null) ?? null,
+              askingPrice: it.asking_price === null || it.asking_price === undefined ? null : Number(it.asking_price),
+            } : null,
+          };
+        }),
+      };
+    },
+    async scanNext(token, marketplace) {
+      const r = await rpc<Row>("ext_scan_next", { p_token: token, p_marketplace: marketplace });
+      return { marketplace, scopeKey: r.scope_key as string, cursor: (r.cursor as string | null) ?? null, limit: Number(r.limit), overlapHours: Number(r.overlap_hours) };
+    },
+    async scanReport(token, report) {
+      const r = await rpc<Row>("ext_scan_report", { p_token: token, p_marketplace: report.marketplace, p_sales: report.sales, p_next_cursor: report.nextCursor });
+      return {
+        ok: !!r.ok, stored: Number(r.stored), duplicates: Number(r.duplicates), jobsCreated: Number(r.jobs_created), unmatched: Number(r.unmatched),
+        cancelled: Number(r.cancelled), cursorAdvanced: !!r.cursor_advanced, ...(r.error ? { error: String(r.error) } : {}),
+      };
+    },
+    jobStart: async (token, id) => job(await rpc<Row>("ext_job_start", { p_token: token, p_job: id })),
+    jobProgress: async (token, id, message) => { await rpc("ext_job_progress", { p_token: token, p_job: id, p_message: message }); },
+    jobExtend: async (token, id) => job(await rpc<Row>("ext_job_extend", { p_token: token, p_job: id })),
+    async jobResult(token, id, outcome) {
+      const ok = outcome.kind === "success";
+      return job(await rpc<Row>("ext_job_result", {
+        p_token: token, p_job: id, p_ok: ok, p_code: ok ? null : outcome.code, p_message: ok ? null : outcome.message,
+        p_result: ok ? outcome.result ?? null : null,
+      }));
+    },
+  };
 }
 
 /** Used by proxy.ts: refreshes the Supabase session cookie and reports the user. */

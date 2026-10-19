@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ShadowSync</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header><strong>ShadowSync</strong> <span id="version" class="muted"></span></header>
+  <section id="pair" hidden>
+    <p>Pair this browser: on the ShadowSync website open <b>Settings &gt; Extension</b>, press <b>Pair this browser</b>, then type the code here.</p>
+    <p><button id="openPair" type="button">Open the pairing page</button></p>
+    <form id="pairForm"><input id="code" autocomplete="off" maxlength="9" placeholder="XXXX-XXXX" aria-label="Pairing code"><button>Pair</button></form>
+  </section>
+  <section id="main" hidden>
+    <div class="row"><span id="device"></span><button id="pauseDevice"></button></div>
+    <p id="pausedNote" class="warn" hidden></p>
+    <h2>Marketplaces</h2>
+    <ul id="mps"></ul>
+    <div class="row"><button id="pollNow">Check now</button><span id="lastPoll" class="muted"></span></div>
+    <p id="err" class="warn" hidden></p>
+    <h2>Recent activity</h2>
+    <ol id="log"></ol>
+    <p><button id="unpair" class="link">Unpair this browser</button></p>
+  </section>
+  <p id="msg" class="muted"></p>
+  <script src="popup.js"></script>
+</body>
+</html>

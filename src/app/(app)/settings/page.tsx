@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getServices } from "@/lib/data";
 import ThemePicker from "@/components/ThemePicker";
 import { logoutAction } from "@/app/auth-actions";
@@ -29,6 +30,11 @@ export default async function Settings() {
             <span className="pill">{c.status.replace("_", " ")}</span>
           </div>
         ))}
+      </div>
+      <div className="card">
+        <h2>More settings</h2>
+        <div className="row between small" style={{ padding: "4px 0" }}><Link href="/settings/extension">Browser extension</Link><span className="muted">pair, pause, remove</span></div>
+        <div className="row between small" style={{ padding: "4px 0" }}><Link href="/settings/alerts">Alerts</Link><span className="muted">text alerts (off)</span></div>
       </div>
       <div className="card">
         <h2>Account</h2>

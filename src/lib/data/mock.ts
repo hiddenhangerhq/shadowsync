@@ -10,20 +10,31 @@ import {
   type MarketplaceConnection, type MarketplaceLoginState, type Photo, type Profile, type Sale, type ScanCursor, type SyncLogEntry,
 } from "./types";
 import * as sm from "../jobs/state-machine";
-import { makeNeedsAction } from "../jobs/store-helpers";
+import { completeJob, makeNeedsAction } from "../jobs/store-helpers";
+import type { DeviceGateway } from "./interfaces";
+import { AUTO_PAUSE_REASON, EXT_RATE, PAIRING_MAX_ACTIVE } from "../ext/limits";
+import { isDeviceToken, PAIRING_TTL_MS, sha256Hex } from "../ext/tokens";
+import { initCursor, processScanReport } from "../jobs/sale-detection";
+import { DeviceAuthError, type AlertPrefs } from "./types";
 
 interface MockUser { id: string; email: string; salt: string; hash: string }
 type MockDevice = ExtensionDevice & { tokenHash: string };
+type LoginRow = MarketplaceLoginState & { userId: string };
+interface MockPairing { id: string; userId: string; codeHash: string; createdAt: string; expiresAt: string; usedAt: string | null; deviceId: string | null }
 interface Tables {
   users: MockUser[]; profiles: Profile[]; items: Item[]; photos: Photo[]; listings: Listing[];
   sales: Sale[]; connections: MarketplaceConnection[]; syncLog: SyncLogEntry[]; credits: CreditEntry[];
-  jobs: Job[]; jobEvents: JobEvent[]; devices: MockDevice[]; loginState: (MarketplaceLoginState & { userId: string })[];
+  jobs: Job[]; jobEvents: JobEvent[]; devices: MockDevice[]; loginState: LoginRow[];
   cursors: ScanCursor[]; itemSyncLog: ItemSyncLogEntry[]; worker: { lastRunAt: string | null };
+  pairings: MockPairing[]; alerts: (AlertPrefs & { userId: string })[];
 }
 const emptyTables = (): Tables => ({
   users: [], profiles: [], items: [], photos: [], listings: [], sales: [], connections: [], syncLog: [], credits: [],
   jobs: [], jobEvents: [], devices: [], loginState: [], cursors: [], itemSyncLog: [], worker: { lastRunAt: null },
+  pairings: [], alerts: [],
 });
+/** Rows saved before 0006 have no kill-switch fields. */
+const withPauseDefaults = (r: LoginRow): LoginRow => Object.assign(r, { paused: r.paused ?? false, pausedReason: r.pausedReason ?? null, challengeStreak: r.challengeStreak ?? 0 });
 
 export const MOCK_COOKIE = "ss_mock_session";
 const now = () => new Date().toISOString();
@@ -32,6 +43,8 @@ const hashPw = (pw: string, salt: string) => scryptSync(pw, salt, 32).toString("
 /** Shared in-process database, optionally persisted to <dir>/db.json. */
 export class MockDb {
   t: Tables = emptyTables();
+  /** Request counters for the device API (not persisted), same limits as _ext_rate() in 0006. */
+  rate = new Map<string, { start: number; n: number }>();
   constructor(public dir: string | null = null) {
     if (dir) {
       fs.mkdirSync(dir, { recursive: true });
@@ -368,14 +381,51 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
         if (input.ipCountry !== undefined) d.lastIpCountry = input.ipCountry;
         for (const [mp, loggedIn] of Object.entries(input.marketplaces ?? {}) as [MarketplaceLoginState["marketplace"], boolean][]) {
           const cur = db.t.loginState.find((x) => x.deviceId === id && x.marketplace === mp);
-          if (cur) { cur.loggedIn = loggedIn; cur.checkedAt = at; } else db.t.loginState.push({ userId: d.userId, deviceId: id, marketplace: mp, loggedIn, checkedAt: at });
+          if (cur) { cur.loggedIn = loggedIn; cur.checkedAt = at; }
+          else db.t.loginState.push({ userId: d.userId, deviceId: id, marketplace: mp, loggedIn, checkedAt: at, paused: false, pausedReason: null, challengeStreak: 0 });
         }
         return commit(publicDevice(d));
       },
       async setPaused(id, paused) { const d = await ownDevice(id); d.paused = paused; return commit(publicDevice(d)); },
       async revoke(id) { const d = await ownDevice(id); d.revokedAt ??= now(); return commit(publicDevice(d)); },
       async marketplaceState() {
-        return (await mine(db.t.loginState)).map(({ userId, ...rest }) => (void userId, rest));
+        return (await mine(db.t.loginState)).map((r) => { const { userId, ...rest } = withPauseDefaults(r); void userId; return { ...rest }; });
+      },
+      async setMarketplacePaused(deviceId, marketplace, paused) {
+        const d = await ownDevice(deviceId);
+        let r = db.t.loginState.find((x) => x.deviceId === d.id && x.marketplace === marketplace);
+        if (!r) { r = { userId: d.userId, deviceId: d.id, marketplace, loggedIn: false, checkedAt: now(), paused: false, pausedReason: null, challengeStreak: 0 }; db.t.loginState.push(r); }
+        withPauseDefaults(r);
+        r.paused = paused; r.pausedReason = paused ? "Paused by you" : null; r.challengeStreak = 0;
+        const { userId, ...rest } = r; void userId;
+        return commit({ ...rest });
+      },
+    },
+    pairing: {
+      async start(code, at = new Date()) {
+        const userId = await uid();
+        const active = db.t.pairings.filter((p) => p.userId === userId && !p.usedAt && p.expiresAt > at.toISOString());
+        if (active.length >= PAIRING_MAX_ACTIVE) throw new DeviceAuthError("too_many_codes", "Too many open pairing codes. Wait 5 minutes or use one of them.");
+        const p: MockPairing = { id: randomUUID(), userId, codeHash: sha256Hex(code), createdAt: at.toISOString(), expiresAt: new Date(at.getTime() + PAIRING_TTL_MS).toISOString(), usedAt: null, deviceId: null };
+        db.t.pairings.push(p);
+        db.save();
+        return { expiresAt: p.expiresAt };
+      },
+    },
+    alerts: {
+      async get() {
+        const userId = await uid();
+        const a = db.t.alerts.find((x) => x.userId === userId);
+        return a ? { smsEnabled: a.smsEnabled, phone: a.phone, updatedAt: a.updatedAt } : { smsEnabled: false, phone: null, updatedAt: null };
+      },
+      async update(patch) {
+        const userId = await uid();
+        let a = db.t.alerts.find((x) => x.userId === userId);
+        if (!a) { a = { userId, smsEnabled: false, phone: null, updatedAt: null }; db.t.alerts.push(a); }
+        if (patch.smsEnabled !== undefined) a.smsEnabled = patch.smsEnabled;
+        if (patch.phone !== undefined) a.phone = patch.phone;
+        a.updatedAt = now();
+        return commit({ smsEnabled: a.smsEnabled, phone: a.phone, updatedAt: a.updatedAt });
       },
     },
     cursors: {
@@ -490,9 +540,158 @@ function makeStorage(db: MockDb, auth: AuthService): StorageService {
   };
 }
 
+/**
+ * The extension's API in mock mode. Mirrors the token-keyed SQL functions in 0006: the raw token is hashed and matched to a device that is
+ * not revoked (and not paused, except for poll), and everything runs as that device's user only. Rules come from the shared modules.
+ */
+function makeDeviceGateway(db: MockDb): DeviceGateway {
+  const rate = (key: string, max: number, windowMs: number) => {
+    const t = Date.now();
+    const r = db.rate.get(key);
+    if (!r || t - r.start >= windowMs) { db.rate.set(key, { start: t, n: 1 }); return; }
+    if (++r.n > max) throw new DeviceAuthError("rate_limited", "Too many requests, slow down");
+  };
+  const asUser = (userId: string): AuthService => ({
+    signUp: async () => ({ user: null, error: "not available" }), signIn: async () => ({ user: null, error: "not available" }), signOut: async () => undefined,
+    getUser: async () => { const u = db.t.users.find((x) => x.id === userId); return u ? { id: u.id, email: u.email } : null; },
+  });
+  const authDevice = (token: string, allowPaused = false) => {
+    if (!isDeviceToken(token)) throw new DeviceAuthError("invalid_token");
+    const d = db.t.devices.find((x) => x.tokenHash === sha256Hex(token));
+    if (!d) throw new DeviceAuthError("invalid_token");
+    if (d.revokedAt) throw new DeviceAuthError("device_revoked", "This browser was disconnected from Shadow Sync. Pair it again.");
+    if (!allowPaused && d.paused) throw new DeviceAuthError("device_paused", "Paused from the dashboard");
+    rate(`device:${d.id}`, EXT_RATE.device.max, EXT_RATE.device.windowMs);
+    return { d, store: makeStore(db, asUser(d.userId)) };
+  };
+  const stateRow = (d: MockDevice, marketplace: Job["marketplace"]) => {
+    let r = db.t.loginState.find((x) => x.deviceId === d.id && x.marketplace === marketplace);
+    if (!r) { r = { userId: d.userId, deviceId: d.id, marketplace, loggedIn: false, checkedAt: now(), paused: false, pausedReason: null, challengeStreak: 0 }; db.t.loginState.push(r); }
+    return withPauseDefaults(r);
+  };
+  const deviceJob = (d: MockDevice, id: string) => {
+    const j = db.t.jobs.find((x) => x.id === id && x.userId === d.userId);
+    if (!j || j.claimedByDevice !== d.id || (j.status !== "claimed" && j.status !== "running")) throw new DeviceAuthError("not_your_job", "Job not found for this browser");
+    return j;
+  };
+  const event = (j: Job, message: string) => {
+    db.t.jobEvents.push({ id: randomUUID(), jobId: j.id, userId: j.userId, at: now(), fromStatus: j.status, toStatus: j.status, message });
+  };
+  const apply = (j: Job, t: sm.Transition) => {
+    Object.assign(j, t.patch);
+    db.t.jobEvents.push({ id: randomUUID(), jobId: j.id, userId: j.userId, at: now(), fromStatus: t.event.fromStatus, toStatus: t.event.toStatus, message: t.event.message });
+  };
+  return {
+    async pairComplete({ code, token, label, extensionVersion, now: at = new Date() }) {
+      rate("pair", EXT_RATE.pair.max, EXT_RATE.pair.windowMs);
+      if (!isDeviceToken(token)) throw new DeviceAuthError("bad_request", "bad token");
+      const p = db.t.pairings.find((x) => x.codeHash === sha256Hex(code) && !x.usedAt && x.expiresAt > at.toISOString());
+      if (!p) throw new DeviceAuthError("pairing_invalid", "That code is wrong, used or expired. Make a new one in Settings > Extension.");
+      const d: MockDevice = {
+        id: randomUUID(), userId: p.userId, label: label.trim().slice(0, 80) || "Browser extension", tokenHash: sha256Hex(token), extensionVersion,
+        createdAt: now(), lastSeenAt: now(), lastPollAt: null, lastIpCountry: null, revokedAt: null, paused: false,
+      };
+      db.t.devices.push(d);
+      p.usedAt = at.toISOString(); p.deviceId = d.id;
+      db.save();
+      return { deviceId: d.id, label: d.label };
+    },
+    async poll(token, input) {
+      const { d } = authDevice(token, true);
+      const at = input.now ?? new Date();
+      d.lastSeenAt = at.toISOString(); d.lastPollAt = at.toISOString(); d.extensionVersion = input.extensionVersion;
+      let requeued = 0;
+      for (const [mp, loggedIn] of Object.entries(input.marketplaces ?? {}) as [Job["marketplace"], boolean][]) {
+        const r = stateRow(d, mp);
+        r.loggedIn = loggedIn; r.checkedAt = at.toISOString();
+        if (!loggedIn) continue;
+        for (const j of db.t.jobs) {
+          if (j.userId !== d.userId || j.marketplace !== mp || j.executor !== "extension") continue;
+          const t = sm.requeueAfterSignIn(j, at);
+          if (t) { apply(j, t); requeued++; }
+        }
+      }
+      const states = db.t.loginState.filter((x) => x.deviceId === d.id).map(withPauseDefaults);
+      const claimed: Job[] = [];
+      if (!d.paused) {
+        const busy = new Set(db.t.jobs.filter((j) => j.claimedByDevice === d.id && (j.status === "claimed" || j.status === "running")).map((j) => j.marketplace));
+        const ready = [...new Set(input.ready ?? [])].filter((mp) => {
+          const r = states.find((x) => x.marketplace === mp);
+          return r && r.loggedIn && !r.paused && !busy.has(mp);
+        });
+        const firsts = ready
+          .map((mp) => sm.pickClaimable(db.t.jobs.filter((j) => j.userId === d.userId && j.marketplace === mp), "extension", at, 1)[0])
+          .filter((j): j is Job => !!j)
+          .sort(sm.claimOrder)
+          .slice(0, Math.max(0, Math.min(input.limit ?? 3, 6)));
+        for (const j of firsts) { apply(j, sm.claim(j, d.id, at)); claimed.push(j); }
+      }
+      db.save();
+      return {
+        device: { id: d.id, label: d.label, paused: d.paused },
+        marketplaces: states.map((r) => ({ marketplace: r.marketplace, loggedIn: r.loggedIn, paused: r.paused, pausedReason: r.pausedReason })),
+        requeued,
+        jobs: claimed.map((j) => {
+          const l = j.listingId ? db.t.listings.find((x) => x.id === j.listingId) : undefined;
+          const it = j.itemId ? db.t.items.find((x) => x.id === j.itemId) : undefined;
+          return {
+            job: { ...j },
+            listing: l ? { externalId: l.externalId, url: l.url } : null,
+            item: it ? { title: it.title, description: it.description, askingPrice: it.askingPrice, brand: it.brand, size: it.size } : null,
+          };
+        }),
+      };
+    },
+    async scanNext(token, marketplace, at = new Date()) {
+      const { d, store } = authDevice(token);
+      const scopeKey = `device:${d.id}`;
+      const c = await initCursor(store, marketplace, scopeKey, at.toISOString());
+      return { marketplace, scopeKey, cursor: c.cursor, limit: 50, overlapHours: 24 };
+    },
+    async scanReport(token, report, at = new Date()) {
+      const { d, store } = authDevice(token);
+      const r = await processScanReport(store, { marketplace: report.marketplace, scopeKey: `device:${d.id}`, source: "extension", sales: report.sales, nextCursor: report.nextCursor }, at);
+      return { ok: r.ok, stored: r.stored, duplicates: r.duplicates, jobsCreated: r.jobsCreated, unmatched: r.unmatched, cancelled: r.cancelled, cursorAdvanced: r.cursorAdvanced, ...(r.error ? { error: r.error } : {}) };
+    },
+    async jobStart(token, id, at = new Date()) {
+      const { d } = authDevice(token);
+      const j = deviceJob(d, id);
+      apply(j, sm.start(j, at));
+      db.save();
+      return { ...j };
+    },
+    async jobProgress(token, id, message) {
+      const { d } = authDevice(token);
+      event(deviceJob(d, id), message.slice(0, 300));
+      db.save();
+    },
+    async jobExtend(token, id, at = new Date()) {
+      const { d } = authDevice(token);
+      const j = deviceJob(d, id);
+      apply(j, sm.extendLease(j, at));
+      db.save();
+      return { ...j };
+    },
+    async jobResult(token, id, outcome, at = new Date()) {
+      const { d, store } = authDevice(token);
+      const marketplace = deviceJob(d, id).marketplace;
+      const done = await completeJob(store, id, outcome, at);
+      const r = stateRow(d, marketplace);
+      if (outcome.kind === "success") r.challengeStreak = 0;
+      else if (outcome.kind === "needs_user" && sm.CHALLENGE_CODES.has(outcome.code)) {
+        r.challengeStreak++;
+        if (r.challengeStreak >= 2) { r.paused = true; r.pausedReason = AUTO_PAUSE_REASON; }
+      }
+      if (outcome.kind === "needs_user" && sm.SIGNED_OUT_CODES.has(outcome.code)) { r.loggedIn = false; r.checkedAt = at.toISOString(); }
+      db.save();
+      return done;
+    },
+  };
+}
+
 export function createMockServices(jar: CookieJar, db: MockDb, opts: { seed?: boolean } = {}): Services {
   const auth = makeAuth(db, jar, { seed: opts.seed ?? false });
-  return { auth, store: makeStore(db, auth), storage: makeStorage(db, auth) };
+  return { auth, store: makeStore(db, auth), storage: makeStorage(db, auth), device: makeDeviceGateway(db) };
 }
 
 /** Read bytes back from mock storage (used by the file-serving route in mock mode only). */

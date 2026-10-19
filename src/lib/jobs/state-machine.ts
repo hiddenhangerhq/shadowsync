@@ -92,8 +92,14 @@ export function applyOutcome(job: Job, outcome: JobOutcome, now: Date): Transiti
 }
 
 /** Error codes the extension and API workers use, mapped to an outcome kind. Unknown codes are hard errors, never silently retried. */
-const TRANSIENT_CODES = new Set(["timeout", "network", "rate_limited", "http_5xx", "server_error", "unavailable"]);
-const NEEDS_USER_CODES = new Set(["signed_out", "login_required", "captcha", "challenge", "verification_required", "reauth_required"]);
+// Keep in sync with _ext_outcome() in migration 0006 (the device-token SQL path); the contract suite checks both.
+export const TRANSIENT_CODES: ReadonlySet<string> = new Set(["timeout", "network", "rate_limited", "http_5xx", "server_error", "unavailable", "deferred"]);
+export const NEEDS_USER_CODES: ReadonlySet<string> = new Set([
+  "signed_out", "login_required", "captcha", "challenge", "verification_required", "reauth_required",
+  "unexpected_page", "review_and_submit", "listing_not_found", "permission_missing",
+]);
+/** Security checks: two in a row on one marketplace auto-pause it for that device (spec 5). */
+export const CHALLENGE_CODES: ReadonlySet<string> = new Set(["captcha", "challenge", "verification_required"]);
 export function outcomeFromError(code: string, message: string): JobOutcome {
   const c = code.toLowerCase();
   if (NEEDS_USER_CODES.has(c)) return { kind: "needs_user", code: c, message };
@@ -123,6 +129,12 @@ export function requeueIfDue(job: Job, now: Date): Transition | null {
 export function manualRetry(job: Job, now: Date): Transition {
   if (job.status !== "failed" && job.status !== "needs_user") throw new IllegalTransitionError(job.status, "queued");
   return move(job, "queued", { ...FIELD_RESET, attempts: 0, nextRunAt: iso(now), finishedAt: null }, "Retried by you");
+}
+/** The extension reports you are signed in again: jobs that stopped because you were signed out go back in the queue (fresh round). */
+export const SIGNED_OUT_CODES: ReadonlySet<string> = new Set(["signed_out", "login_required"]);
+export function requeueAfterSignIn(job: Job, now: Date): Transition | null {
+  if (job.status !== "needs_user" || !SIGNED_OUT_CODES.has(job.lastErrorCode ?? "")) return null;
+  return move(job, "queued", { ...FIELD_RESET, attempts: 0, nextRunAt: iso(now), finishedAt: null }, "You are signed in again, back in the queue");
 }
 /** Cancel (the user, or the kill switch). Legal from any open state. */
 export function cancel(job: Job, now: Date, why = "Canceled by you"): Transition {

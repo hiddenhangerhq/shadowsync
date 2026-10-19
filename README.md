@@ -90,3 +90,24 @@ stored through `StorageService` (Supabase Storage bucket `item-photos`, private,
 - Dashboard API: `/api/v1/jobs`, `/api/v1/jobs/:id` (+ `/retry`, `/cancel`), `/api/v1/needs-action`, `/api/v1/items/:id/sync-log`, `/api/v1/extension/status`.
 - Worker: `GET|POST /api/cron/worker` with `Authorization: Bearer $CRON_SECRET`. Vercel Hobby only allows daily crons, so no schedule is configured in `vercel.json`.
 - Tests: `npm test` (mock + in-process Postgres for the real SQL). Real Supabase run: `RUN_SUPABASE=1 npm test` on **Node 22+** (the job-queue half skips itself until 0005 is applied).
+
+## Browser extension (Chrome and Edge)
+Code in `extension/` (MV3, one build for both browsers). Real actions exist for **Poshmark only**; other marketplaces say "not supported yet".
+It needs migration `0006_extension.sql` (also `/workspace/shadowsync-setup-0006.sql`) on Supabase before pairing works.
+
+Build it: `npm run build:extension` (optional `SHADOWSYNC_API_ORIGIN=https://your-site.example`, default `https://shadowsync-ruby.vercel.app`).
+Output: the folder `extension/dist` and the zip `/workspace/shadowsync-extension.zip`. It is not on the Chrome Web Store.
+
+### Install it (no technical knowledge needed)
+1. Unzip `shadowsync-extension.zip` into a folder you will keep (for example `Documents/ShadowSync extension`). Don't delete that folder later: the browser loads the extension from it.
+2. Open your browser's extensions page:
+   - **Chrome:** type `chrome://extensions` in the address bar and press Enter.
+   - **Edge:** type `edge://extensions` in the address bar and press Enter.
+3. Turn on **Developer mode** (a switch at the top right in Chrome, on the left side in Edge).
+4. Click **Load unpacked** and choose the folder from step 1 (the one that contains `manifest.json`).
+5. Click the puzzle-piece icon in the toolbar and pin **ShadowSync** so its icon stays visible.
+6. Click the ShadowSync icon, then **Open the pairing page**. Sign in to ShadowSync if asked and press **Pair this browser**. (Or open Settings > Extension yourself, press Pair, and type the code shown into the popup.)
+7. In the popup, press **Connect** next to Poshmark and allow the permission the browser asks for (it covers poshmark.com only). Make sure you are signed in to Poshmark in this same browser.
+8. To update later: replace the folder's contents with the new zip, then press the circular **Reload** arrow on the ShadowSync card in the extensions page.
+
+To stop everything at once: **Pause all** in the popup, or Pause in Settings > Extension. To remove it: Remove it in Settings > Extension, then click **Remove** on the extensions page.

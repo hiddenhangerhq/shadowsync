@@ -50,6 +50,15 @@ export async function completeJob(store: DataStore, id: string, outcome: JobOutc
     }
     await store.itemSyncLog.append({ event: job.jobType === "mark_sold" ? "marked_sold" : "delisted", source, itemId: job.itemId, listingId: job.listingId,
       marketplace: job.marketplace, jobId: job.id, detail: "Confirmed by the worker" });
+  } else if (job.status === "succeeded" && job.jobType === "create_listing" && job.itemId && typeof job.result?.externalId === "string") {
+    // Store the marketplace's listing id at once, so a retry can never post the item twice (spec 2).
+    const r = job.result as { externalId: string; url?: unknown };
+    const prev = (await store.listings.listForItem(job.itemId)).find((x) => x.marketplace === job.marketplace);
+    const l = await store.listings.upsert({
+      itemId: job.itemId, marketplace: job.marketplace, externalId: r.externalId, url: typeof r.url === "string" ? r.url : prev?.url ?? null,
+      price: prev?.price ?? null, status: "active", listedAt: prev?.listedAt ?? now.toISOString(), endedAt: null, source: job.executor,
+    });
+    await store.itemSyncLog.append({ event: "listed", source, itemId: job.itemId, listingId: l.id, marketplace: job.marketplace, jobId: job.id, detail: "Listed by the worker" });
   } else if (job.status === "failed") {
     await store.itemSyncLog.append({ event: isDelist ? "delist_failed" : "job_failed", source, itemId: job.itemId, listingId: job.listingId,
       marketplace: job.marketplace, jobId: job.id, detail: job.lastError });

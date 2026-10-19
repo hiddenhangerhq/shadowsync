@@ -110,7 +110,7 @@ describe("status banner health (spec section 6)", () => {
     expect(by(computeHealth(base({ jobs: [job({ status: "needs_user" })] })), "extension")).toBeUndefined();
   });
   it("per marketplace: signed out shows yellow (newest state wins, revoked devices ignored)", () => {
-    const st = (loggedIn: boolean, checkedAt: string, deviceId = "d1") => ({ deviceId, marketplace: "poshmark" as const, loggedIn, checkedAt });
+    const st = (loggedIn: boolean, checkedAt: string, deviceId = "d1") => ({ deviceId, marketplace: "poshmark" as const, loggedIn, checkedAt, paused: false, pausedReason: null, challengeStreak: 0 });
     const h = computeHealth(base({ devices: [dev()], marketplaceState: [st(false, ago(5 * MIN))] }));
     expect(by(h, "signed_out:poshmark")).toMatchObject({ level: "yellow", title: "Signed out of Poshmark in your browser" });
     expect(by(computeHealth(base({ devices: [dev()], marketplaceState: [st(false, ago(5 * MIN)), st(true, ago(MIN))] })), "signed_out:poshmark")).toBeUndefined();
@@ -166,7 +166,7 @@ describe("request validation", () => {
     expect(bad(null)).toMatch(/object/);
     expect(bad([])).toMatch(/object/);
     expect(bad({ jobType: "delist", itemId: id, listingId: id })).toMatch(/marketplace/);
-    expect(bad({ marketplace: "facebook", jobType: "delist", itemId: id, listingId: id })).toMatch(/marketplace/);
+    expect(bad({ marketplace: "myspace", jobType: "delist", itemId: id, listingId: id })).toMatch(/marketplace/);
     expect(bad({ marketplace: "ebay", jobType: "rm_rf" })).toMatch(/jobType/);
     expect(bad({ marketplace: "ebay", jobType: "delist", itemId: "x", listingId: id })).toMatch(/itemId/);
     expect(bad({ marketplace: "ebay", jobType: "delist", itemId: id })).toMatch(/listingId is required/);

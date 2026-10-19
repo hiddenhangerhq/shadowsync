@@ -1,7 +1,7 @@
 // Request validation for the dashboard job API. Pure. The client never chooses executor, priority, attempts or timing.
 import { JOB_STATUSES, JOB_TYPES, type JobStatus, type JobType, type Marketplace } from "../data/types";
 
-export const MARKETPLACE_IDS: Marketplace[] = ["ebay", "poshmark", "depop", "whatnot", "grailed", "etsy", "mercari", "shopify", "wix", "other"];
+export const MARKETPLACE_IDS: Marketplace[] = ["ebay", "poshmark", "depop", "whatnot", "grailed", "etsy", "mercari", "shopify", "wix", "facebook", "vinted", "other"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (v: unknown): v is string => typeof v === "string" && UUID.test(v);
 

@@ -5,7 +5,7 @@ export const ITEM_STATUSES: ItemStatus[] = ["draft", "listed", "sold", "delisted
 
 export type Marketplace =
   | "ebay" | "poshmark" | "depop" | "whatnot" | "grailed"
-  | "etsy" | "mercari" | "shopify" | "wix" | "other";
+  | "etsy" | "mercari" | "shopify" | "wix" | "facebook" | "vinted" | "other";
 
 /**
  * How a record got into Shadow Sync. User-facing paths: "api" (marketplace's official API), "extension"
@@ -196,8 +196,8 @@ export class InsufficientCreditsError extends Error {
 
 /** Thrown when a table or function from migration 0005 is missing (David has not run the SQL yet). Pages degrade instead of crashing. */
 export class SchemaMissingError extends Error {
-  constructor(what = "job queue tables") {
-    super(`Not set up yet: ${what} (run migration 0005 in Supabase)`);
+  constructor(what = "job queue tables", public migration: "0005" | "0006" = "0005") {
+    super(`Not set up yet: ${what} (run migration ${migration} in Supabase)`);
     this.name = "SchemaMissingError";
   }
 }
@@ -286,7 +286,58 @@ export interface HeartbeatInput {
   poll?: boolean;
   now?: Date;
 }
-export interface MarketplaceLoginState { deviceId: string; marketplace: Marketplace; loggedIn: boolean; checkedAt: string }
+export interface MarketplaceLoginState {
+  deviceId: string; marketplace: Marketplace; loggedIn: boolean; checkedAt: string;
+  /** Kill switch for one marketplace on one device (0006). Also set automatically after 2 security checks in a row. */
+  paused: boolean; pausedReason: string | null; challengeStreak: number;
+}
+
+// ---------------------------------------------------------------- extension pairing + device API (migration 0006, spec 4 and 5)
+
+/** Device-token and pairing failures. `status` is the HTTP status the /api/v1/ext routes answer with. */
+export type DeviceErrorCode = "invalid_token" | "device_revoked" | "device_paused" | "pairing_invalid" | "rate_limited" | "not_your_job" | "too_many_codes" | "bad_request";
+const DEVICE_ERROR_STATUS: Record<DeviceErrorCode, number> = {
+  invalid_token: 401, device_revoked: 401, device_paused: 423, pairing_invalid: 400, rate_limited: 429, not_your_job: 404, too_many_codes: 429, bad_request: 400,
+};
+export class DeviceAuthError extends Error {
+  status: number;
+  constructor(public code: DeviceErrorCode, message?: string) {
+    super(message ?? code.replace(/_/g, " "));
+    this.name = "DeviceAuthError";
+    this.status = DEVICE_ERROR_STATUS[code];
+  }
+}
+export interface ExtPollInput {
+  extensionVersion: string;
+  /** Signed in yes/no per connected marketplace, as the extension sees it. */
+  marketplaces?: Partial<Record<Marketplace, boolean>>;
+  /** Marketplaces the extension can run a job on right now (signed in, not paused locally, under its daily cap, idle). */
+  ready?: Marketplace[];
+  /** Max jobs to hand out (one per marketplace at most). Default 3. */
+  limit?: number;
+  now?: Date;
+}
+export interface ClaimedExtJob {
+  job: Job;
+  listing: { externalId: string | null; url: string | null } | null;
+  item: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null } | null;
+}
+export interface ExtPollResult {
+  device: { id: string; label: string; paused: boolean };
+  marketplaces: Pick<MarketplaceLoginState, "marketplace" | "loggedIn" | "paused" | "pausedReason">[];
+  jobs: ClaimedExtJob[];
+  /** Jobs that were waiting because you were signed out, put back in the queue now that you are signed in. */
+  requeued: number;
+}
+export interface ExtScanNext { marketplace: Marketplace; scopeKey: string; cursor: string | null; limit: number; overlapHours: number }
+export interface ExtScanSale {
+  orderId: string; soldAt: string; price: number; fees?: number | null; sku?: string | null; title?: string | null;
+  shipBy?: string | null; externalListingId?: string | null; cancelled?: boolean;
+}
+export interface ExtScanResult { ok: boolean; stored: number; duplicates: number; jobsCreated: number; unmatched: number; cancelled: number; cursorAdvanced: boolean; error?: string }
+
+/** Settings > Alerts. SMS is a stored preference only: no provider is wired up (no paid services). */
+export interface AlertPrefs { smsEnabled: boolean; phone: string | null; updatedAt: string | null }
 
 export interface ScanCursor {
   id: string;
