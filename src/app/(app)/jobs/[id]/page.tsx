@@ -2,7 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getServices, type Job, type JobEvent } from "@/lib/data";
 import { isUuid } from "@/lib/jobs/validate";
-import { when, words } from "@/lib/jobs/format";
+import { when } from "@/lib/jobs/format";
+import { jobEventLabel, jobLabel, statusWord } from "@/lib/jobs/labels";
 import { cancelJobAction, retryJobAction } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -32,7 +33,7 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
     <>
       <Link href="/jobs" className="muted small">← Jobs</Link>
       <div className="row between" style={{ margin: "6px 0 10px", flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0 }}>{words(job.jobType)}</h1><span className={`pill ${job.status}`}>{words(job.status)}</span>
+        <h1 style={{ margin: 0 }}>{jobLabel(job)}</h1><span className={`pill ${job.status}`}>{statusWord(job.status)}</span>
       </div>
       {item && <p style={{ marginTop: 0 }}>For <Link href={`/items/${item.id}`}>{item.title}</Link>{item.sku && <> · <span className="sku">{item.sku}</span></>}</p>}
       <div className="card">
@@ -46,7 +47,7 @@ export default async function JobPage({ params }: { params: Promise<{ id: string
         <h2>Job log</h2>
         <ul className="tl">
           {events.map((e) => (
-            <li key={e.id}><span className="when">{when(e.at)}</span><span><span className={`pill ${e.toStatus}`}>{words(e.toStatus)}</span> <span className="small">{e.message}</span></span></li>
+            <li key={e.id}><span className="when">{when(e.at)}</span><span><span className="small"><b>{jobEventLabel(e.toStatus, jobLabel(job), job.marketplace)}</b>{e.message && !/^queued$/i.test(e.message) ? ` · ${e.message}` : ""}</span></span></li>
           ))}
           {events.length === 0 && <li className="muted small">No events yet.</li>}
         </ul>

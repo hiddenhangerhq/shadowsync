@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { computeNeedsAction, GRACE_MS } from "../src/lib/jobs/needs-action";
 import { computeHealth, formatAge, type HealthInput } from "../src/lib/jobs/health";
 import { parseCreateJob, parseLimit, parseStatusFilter } from "../src/lib/jobs/validate";
+import { jobLabel } from "../src/lib/jobs/labels";
 import { buildTimeline } from "../src/lib/jobs/timeline";
 import { authorizeCron } from "../src/lib/jobs/cron";
 import { buildNewJob } from "../src/lib/jobs/state-machine";
@@ -200,7 +201,8 @@ describe("item timeline", () => {
         { id: "3", jobId: "other", userId: "u", at: ago(5 * MIN), fromStatus: null, toStatus: "queued", message: "not ours" },
       ],
     );
-    expect(rows.map((r) => r.label)).toEqual(["mark sold: failed", "mark sold: queued", "sale detected"]);
+    expect(rows.map((r) => r.label)).toEqual([`Failed: ${jobLabel(j)}`, `Queued: ${jobLabel(j)} on Poshmark`, "sale detected"]);
+    expect(rows.map((r) => r.detail)).toEqual(["Failed: x", null, "sold"]);
     expect(rows[0]).toMatchObject({ kind: "job", marketplace: "poshmark", source: "extension", jobId: "j1" });
   });
 });

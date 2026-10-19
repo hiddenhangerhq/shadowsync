@@ -60,8 +60,8 @@ describe.each(targets)("link + test actions: $name", (b) => {
     const l = await link(svc, item.id);
     const q = async (a: string, v = "") => (await queueTestAction(svc, item.id, l.id, a, v)).body.job as { jobType: string; payload: Record<string, unknown>; executor: string; listingId: string };
     expect(await q("quantity", "2")).toMatchObject({ jobType: "update_listing", payload: { quantity: 2 }, executor: "extension", listingId: l.id });
-    expect(await q("price", "18")).toMatchObject({ jobType: "update_listing", payload: { price: 18 } });
-    expect(await q("title", "Jeans black test")).toMatchObject({ jobType: "update_listing", payload: { title: "Jeans black test" } });
+    expect(await q("price", "18")).toMatchObject({ jobType: "update_listing", payload: { price: 18, previous: { price: 20 } } });
+    expect(await q("title", "Jeans black test")).toMatchObject({ jobType: "update_listing", payload: { title: "Jeans black test", previous: { title: "Jeans black" } } });
     expect(await q("count")).toMatchObject({ jobType: "sync_status" });
     expect(await q("not_for_sale")).toMatchObject({ jobType: "delist", payload: {} });
     expect((await svc.store.jobs.list({ itemId: item.id }))).toHaveLength(5);
@@ -99,6 +99,9 @@ describe.each(targets)("link + test actions: $name", (b) => {
       expect((await extJob(env.client(), "result", token, id, { ok: true, result: { note: "Saved" } }, "1.1.1.1")).status).toBe(200);
       expect((await svc.store.jobs.get(id))?.status).toBe("succeeded");
     }
+    // The next change knows the old value from the last successful one: "$25.00 -> $30.00".
+    const next = (await queueTestAction(svc, item.id, l.id, "price", "30")).body.job as { payload: Record<string, unknown> };
+    expect(next.payload.previous).toEqual({ price: 25 });
   });
 
   it("regression: a run that died (lease expired, never reported) no longer blocks the marketplace; the next poll requeues and hands it out", async () => {

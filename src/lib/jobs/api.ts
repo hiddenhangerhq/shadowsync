@@ -7,6 +7,7 @@ import { executorFor } from "./sale-detection";
 import { parseCreateJob, parseLimit, parseStatusFilter, isUuid } from "./validate";
 import { buildTimeline } from "./timeline";
 import { loadOverview } from "./overview";
+import { jobEventLabel, jobLabel } from "./labels";
 
 export interface ApiResult { status: number; body: Record<string, unknown> }
 const fail = (status: number, error: string, extra: Record<string, unknown> = {}): ApiResult => ({ status, body: { error, ...extra } });
@@ -55,7 +56,7 @@ export const createJob = (svc: Services, body: unknown) =>
     });
     if (created && (r.jobType === "delist" || r.jobType === "mark_sold")) {
       await svc.store.itemSyncLog.append({ event: "delist_queued", source: "manual", itemId: job.itemId, listingId: job.listingId,
-        marketplace: job.marketplace, jobId: job.id, detail: `${job.jobType} queued by you` }).catch(() => undefined);
+        marketplace: job.marketplace, jobId: job.id, detail: `${jobEventLabel("queued", jobLabel(job), job.marketplace)} (by you)` }).catch(() => undefined);
     }
     return ok({ job, created, deduped: !created }, created ? 201 : 200);
   });

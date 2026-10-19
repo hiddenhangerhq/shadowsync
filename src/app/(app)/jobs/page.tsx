@@ -3,7 +3,8 @@ import { getServices, type Job, type JobStatus } from "@/lib/data";
 import StatusBanner from "@/components/StatusBanner";
 import NeedsActionPanel from "@/components/NeedsActionPanel";
 import { loadOverview } from "@/lib/jobs/overview";
-import { when, words } from "@/lib/jobs/format";
+import { when } from "@/lib/jobs/format";
+import { jobLabel, statusWord } from "@/lib/jobs/labels";
 import { retryJobAction, cancelJobAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -58,8 +59,8 @@ export default async function JobsPage({ searchParams }: { searchParams: Promise
             <div key={j.id} className="item jobrow">
               <Link href={`/jobs/${j.id}`} style={{ minWidth: 0, flex: "1 1 220px", color: "var(--text)" }}>
                 <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                  <b>{words(j.jobType)}</b><span className="muted small">· {j.marketplace} · {j.executor === "api" ? "official API" : "browser extension"}</span>
-                  <span className={`pill ${j.status}`}>{words(j.status)}</span>
+                  <b>{jobLabel(j)}</b><span className="muted small">· {j.marketplace} · {j.executor === "api" ? "official API" : "browser extension"}</span>
+                  <span className={`pill ${j.status}`}>{statusWord(j.status)}</span>
                 </div>
                 <div className="muted small">
                   {when(j.createdAt)} · attempt {j.attempts}/{j.maxAttempts}

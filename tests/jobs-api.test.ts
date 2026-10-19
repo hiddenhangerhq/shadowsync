@@ -127,7 +127,9 @@ describe("needs-action, sync log, extension status", () => {
     expect(na[0].message).toContain("Listing not found");
     const log = (await getItemSyncLog(svc, itemId)).body as { item: { sku: string }; timeline: { label: string }[] };
     expect(log.item.sku).toBe("1001");
-    expect(log.timeline.map((r) => r.label)).toEqual(expect.arrayContaining(["sale detected", "mark sold: failed", "mark sold: queued"]));
+    expect(log.timeline.map((r) => r.label)).toEqual(expect.arrayContaining(["sale detected", "Failed: Delete listing (sold)", "Queued: Delete listing (sold) on Poshmark"]));
+    expect(log.timeline.find((r) => r.label.startsWith("Queued:"))).toMatchObject({ detail: "Queued: Delete listing (sold) on Poshmark, because it sold on eBay" });
+    expect(log.timeline.map((r) => r.label)).not.toContain("delist queued"); // folded into the job's Queued line
     await svc.store.needsAction.markDelisted(na[0].listingId);
     expect((await getNeedsAction(svc)).body.entries).toEqual([]);
     expect((await svc.store.listings.listForItem(itemId))[0].status).toBe("ended");

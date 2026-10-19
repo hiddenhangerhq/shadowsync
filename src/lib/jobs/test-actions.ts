@@ -80,22 +80,26 @@ export async function queueTestAction(svc: Services, itemId: string, listingId: 
   if (!listing) return fail(404, "Listing not found");
   if (!TEST_ACTIONS.includes(action as TestAction)) return fail(400, "Unknown test action");
   const key = (k: string) => `test:${k}:${listing.id}:${now.getTime()}`;
+  // Old value for the "old -> new" label: the last successful change of that field, else what we stored for the listing / item.
+  const done = (await svc.store.jobs.list({ itemId })).filter((j) => j.listingId === listing.id && j.jobType === "update_listing" && j.status === "succeeded")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const last = (f: "price" | "title" | "quantity") => done.find((j) => j.payload[f] !== undefined && j.payload[f] !== null)?.payload[f];
   const base = { marketplace: listing.marketplace, itemId, listingId: listing.id };
   const v = value.trim();
   switch (action as TestAction) {
     case "quantity": {
       const n = Number(v);
       if (!Number.isInteger(n) || n < 0 || n > 999) return fail(400, "Quantity must be a whole number from 0 to 999");
-      return createJob(svc, { ...base, jobType: "update_listing", payload: { quantity: n }, idempotencyKey: key(`quantity:${n}`) });
+      return createJob(svc, { ...base, jobType: "update_listing", payload: { quantity: n, ...(last("quantity") !== undefined ? { previous: { quantity: last("quantity") } } : {}) }, idempotencyKey: key(`quantity:${n}`) });
     }
     case "price": {
       const n = Number(v);
       if (!Number.isFinite(n) || n < 1 || n > 100000) return fail(400, "Price must be a number of dollars");
-      return createJob(svc, { ...base, jobType: "update_listing", payload: { price: Math.round(n) }, idempotencyKey: key(`price:${n}`) });
+      return createJob(svc, { ...base, jobType: "update_listing", payload: { price: Math.round(n), previous: { price: last("price") ?? listing.price ?? item.askingPrice ?? null } }, idempotencyKey: key(`price:${n}`) });
     }
     case "title": {
       if (!v || v.length > 80) return fail(400, "Title must be 1 to 80 characters");
-      return createJob(svc, { ...base, jobType: "update_listing", payload: { title: v }, idempotencyKey: key("title") });
+      return createJob(svc, { ...base, jobType: "update_listing", payload: { title: v, previous: { title: last("title") ?? item.title } }, idempotencyKey: key("title") });
     }
     case "count": return createJob(svc, { ...base, jobType: "sync_status", idempotencyKey: key("count") });
     case "not_for_sale": return createJob(svc, { ...base, jobType: "delist", idempotencyKey: key("nfs") });

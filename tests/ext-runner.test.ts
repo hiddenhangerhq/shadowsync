@@ -111,6 +111,10 @@ describe("worker end to end on the mock API", () => {
     expect((await svc.store.jobs.get(job.id))?.status).toBe("succeeded");
     expect((await svc.store.listings.list()).find((x) => x.id === l.id)?.status).toBe("ended");
     expect(h.fb.log.opened).toContain(`https://poshmark.com/edit-listing/${ID}`);
+    const texts = h.state.log.map((x) => x.text);
+    expect(texts).toContain("Poshmark: Running: Set Not For Sale");
+    expect(texts).toContain("Poshmark: Succeeded: Set Not For Sale (Set to Not For Sale)");
+    expect(texts).toContain("Poshmark: Succeeded: Check sign-in (signed in)");
   });
   it("regression (jobs stuck in queued): an unclear or failed sign-in check does not hold jobs back; only a definite sign-out does", async () => {
     const { svc, enqueue } = await setup();
@@ -224,8 +228,8 @@ describe("worker end to end on the mock API", () => {
     h.advance(120_000);
     const r = await w.scan(h.deps, { salesOnly: true });
     expect(h.state.listingsScanAt?.poshmark).toBeUndefined();
-    expect(r.notes).toEqual(["Poshmark: sales scan saw 1 sale(s), 1 new, 0 delist(s) queued"]);
-    expect(h.state.log[0].text).toContain("sales scan saw 1");
+    expect(r.notes).toEqual(["Poshmark: Succeeded: Scan sales (saw 1 sale(s), 1 new, 0 delist(s) queued)"]);
+    expect(h.state.log[0].text).toContain("Scan sales (saw 1");
     h.advance(120_000);
     expect((await w.scan(h.deps, { salesOnly: true })).notes[0]).toContain("0 new"); // no duplicates
   });

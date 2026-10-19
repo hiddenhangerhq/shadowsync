@@ -4,6 +4,7 @@
 import type { DataStore } from "../data/interfaces";
 import type { ConnectionType, Item, Job, JobExecutor, JobType, Listing, Marketplace, MarketplaceConnection, NewJob, Sale, Source } from "../data/types";
 import { delistKey } from "./state-machine";
+import { jobEventLabel, jobLabel, marketplaceName } from "./labels";
 import { asNewListing } from "./store-helpers";
 import { cancelledSaleKey, soldAgainKey, soldLiveKey, unmatchedSaleKey } from "./needs-action";
 
@@ -173,7 +174,7 @@ export async function processScanReport(store: DataStore, report: ScanReport, no
         if (!created) continue;
         res.jobsCreated++;
         await store.itemSyncLog.append({ event: "delist_queued", source: report.source, itemId: owner.id, listingId: plan.listingId ?? null, marketplace: plan.marketplace,
-          jobId: job.id, detail: `${job.jobType} queued because it sold on ${report.marketplace}` });
+          jobId: job.id, detail: `${jobEventLabel("queued", jobLabel(job), job.marketplace)}, because it sold on ${marketplaceName(report.marketplace)}` });
       }
     }
 

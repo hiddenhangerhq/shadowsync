@@ -3,6 +3,7 @@
 // 2 security checks in a row, and the kill switch (this browser, or one marketplace) are all enforced here before any tab opens.
 import { HOST_TABLE, EXT_MARKETPLACES, type ExtMarketplace, type ResultCode } from "../../src/lib/ext/protocol";
 import { validateAction } from "./handler";
+import { actionLabel } from "../../src/lib/jobs/labels";
 import { begin, canRun, emptyPacing, finish, isReady, readiness, setDevicePaused, setMarketplacePaused, type PacingState } from "./pacing";
 import { runAction, type Browser, type RunOutcome } from "./runner";
 import { ApiError, type Api } from "./api";
@@ -53,14 +54,14 @@ async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getS
     s.pacing = finish(s.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code }, d.now(), d.rand());
     if (out.ok && out.loggedIn !== undefined) s.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
     if (!out.ok && out.code === "signed_out") s.logins[m] = { loggedIn: false, at: d.now() };
-    if (!out.ok) addLog(s, d.now(), `${HOST_TABLE[m].label} ${action}: ${out.message}`);
+    if (!out.ok) addLog(s, d.now(), `${HOST_TABLE[m].label}: Failed: ${actionLabel(action, payload)}: ${out.message}`);
   });
   return out;
 }
 
 export async function checkLogin(d: Deps, m: ExtMarketplace) {
   const r = await runLocal(d, m, "checkLogin", {});
-  if (r.ok) await update(d, (s) => addLog(s, d.now(), `${HOST_TABLE[m].label}: ${r.loggedIn === true ? "signed in" : r.loggedIn === false ? "signed out" : "sign-in unknown (jobs still run)"}`));
+  if (r.ok) await update(d, (s) => addLog(s, d.now(), `${HOST_TABLE[m].label}: Succeeded: ${actionLabel("checkLogin")} (${r.loggedIn === true ? "signed in" : r.loggedIn === false ? "signed out" : "unknown, jobs still run"})`));
   return r;
 }
 export async function checkAllLogins(d: Deps) {
@@ -120,7 +121,7 @@ export async function runJob(d: Deps, raw: { jobId: string } & Record<string, un
   const v = canRun(s.pacing, m, a.action, d.now());
   if (!v.ok) return report(d, raw.jobId, { ok: false, code: "deferred", message: v.reason });
   try { await d.api.start(raw.jobId); } catch (e) { return handleApiError(d, e); }
-  await update(d, (st) => { st.pacing = begin(st.pacing, m, a.action, d.now()); });
+  await update(d, (st) => { st.pacing = begin(st.pacing, m, a.action, d.now()); addLog(st, d.now(), `${HOST_TABLE[m].label}: Running: ${actionLabel(a.action, a.payload)}`); });
   const lease = setInterval(() => { d.api.extend(raw.jobId).catch(() => undefined); }, 60_000);
   let out: RunOutcome;
   try {
@@ -130,7 +131,8 @@ export async function runJob(d: Deps, raw: { jobId: string } & Record<string, un
     st.pacing = finish(st.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code }, d.now(), d.rand());
     if (!out.ok && out.code === "signed_out") st.logins[m] = { loggedIn: false, at: d.now() };
     if (out.ok && out.loggedIn !== undefined) st.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
-    addLog(st, d.now(), `${HOST_TABLE[m].label} ${a.action}: ${out.ok ? (out.result.note ?? "done") : out.message}`);
+    const label = actionLabel(a.action, a.payload);
+    addLog(st, d.now(), `${HOST_TABLE[m].label}: ${out.ok ? `Succeeded: ${label}${out.result.note ? ` (${out.result.note})` : ""}` : `Failed: ${label}: ${out.message}`}`);
   });
   await report(d, raw.jobId, out.ok ? { ok: true, result: out.result } : { ok: false, code: out.code, message: out.message });
 }
@@ -155,7 +157,7 @@ export async function scan(d: Deps, opts: { salesOnly?: boolean } = {}): Promise
           const rep = await d.api.listingsReport(m, r.listingIds ?? []);
           await update(d, (st) => {
             st.listingsScanAt = { ...(st.listingsScanAt ?? {}), [m]: d.now() };
-            if (rep.flagged) addLog(st, d.now(), `${HOST_TABLE[m].label}: ${rep.flagged} sold item(s) still live, see Sold but still active`);
+            addLog(st, d.now(), `${HOST_TABLE[m].label}: Succeeded: ${actionLabel("getListings")} (${rep.seen} live${rep.flagged ? `, ${rep.flagged} sold item(s) still live, see Sold but still active` : ""})`);
           });
         }
         continue;
@@ -164,7 +166,7 @@ export async function scan(d: Deps, opts: { salesOnly?: boolean } = {}): Promise
       const r = await runLocal(d, m, "getSales", { cursor: next.cursor, limit: Math.min(next.limit, 100) });
       if (!r.ok) { notes.push(`${label}: ${"message" in r ? r.message : "scan failed"}`); continue; }
       const rep = await d.api.scanReport(m, r.sales ?? [], r.nextCursor ?? null);
-      const note = `${label}: sales scan saw ${(r.sales ?? []).length} sale(s), ${rep.stored} new, ${rep.jobsCreated} delist(s) queued`;
+      const note = `${label}: Succeeded: ${actionLabel("getSales")} (saw ${(r.sales ?? []).length} sale(s), ${rep.stored} new, ${rep.jobsCreated} delist(s) queued)`;
       notes.push(note);
       if (rep.jobsCreated || opts.salesOnly) await update(d, (st) => addLog(st, d.now(), note));
     } catch (e) { notes.push(`${label}: ${(e as Error).message}`); await handleApiError(d, e); }
