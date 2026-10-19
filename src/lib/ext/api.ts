@@ -72,9 +72,17 @@ export const extPairComplete = (svc: Services, body: unknown, ip: string) =>
   });
 
 /** Poll: heartbeat + claim. Each claimed job goes out as a fixed action built from OUR data (never a URL or code to run). */
+// Time-driven upkeep (expired leases back to the queue, due retries back to queued) normally runs from /api/cron/worker, but the
+// free Vercel plan has no frequent cron, so without this a crashed run or a retry would sit there for good and block that marketplace
+// (regression: jobs stuck in "queued"/"retry wait"). job_maintenance() is safe to call often; throttled per server instance.
+let lastUpkeep = 0;
+export const UPKEEP_EVERY_MS = 30_000;
+export const resetUpkeep = () => { lastUpkeep = 0; };
+
 export const extPoll = (svc: Services, token: string | null, body: unknown, ip: string) =>
   device(token, ip, async (t) => {
     const b = parse(pollSchema, body);
+    if (Date.now() - lastUpkeep >= UPKEEP_EVERY_MS) { lastUpkeep = Date.now(); await svc.store.worker.run().catch(() => undefined); }
     const r = await svc.device.poll(t, { extensionVersion: b.extensionVersion, marketplaces: b.marketplaces, ready: b.ready, limit: b.limit });
     const actions: (ActionRequest & { leaseExpiresAt: string | null; attempt: number })[] = [];
     for (const c of r.jobs) {

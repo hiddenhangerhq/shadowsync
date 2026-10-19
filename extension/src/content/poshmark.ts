@@ -24,7 +24,8 @@ export function pageOf(url: string): Page {
 
 /** Signed in (true), signed out (false) or can't tell (null), from the page header. */
 export function signedIn(doc: Document): boolean | null {
-  if (doc.querySelector('a[href*="logout"], a[href^="/user/account"]') || byText(doc, "a", /^my closet$/i).length) return true;
+  if (doc.querySelector('a[href*="logout"], a[href^="/user/account"], a[href="/news"]')
+      || byText(doc, 'a, button, [role="menuitem"]', /^(my closet|my likes|log ?out|sign ?out|account settings|my sales)$/i).length) return true;
   if (doc.querySelector('a[href^="/login"], a[href*="/login?"]') || byText(doc, "a, button", /^(log ?in|sign ?up)$/i).length) return false;
   return null;
 }
@@ -218,7 +219,8 @@ export function poshmarkStep(doc: Document, input: StepInput): StepResult {
   if (notFound(doc)) return stop("listing_not_found", "Poshmark says this page or listing does not exist. Check it, then use Mark delisted or Retry.");
   const auth = signedIn(doc);
   if (input.action === "checkLogin") {
-    if (auth === null) return stop("unexpected_page", "Could not tell whether you are signed in to Poshmark");
+    // Can't tell: say so, but it is not an error (an error here used to count toward the error-burst pause and left jobs waiting).
+    if (auth === null) return { kind: "done", loggedIn: null, result: { note: "Could not tell whether you are signed in; jobs will try and stop if Poshmark asks you to sign in" } };
     return { kind: "done", loggedIn: auth };
   }
   if (auth === false) return stop("signed_out", "Signed out of Poshmark. Sign in in this browser; waiting jobs then continue by themselves.");

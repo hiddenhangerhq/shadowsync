@@ -22,12 +22,14 @@ describe("page and sign-in detection", () => {
     expect(pageOf(U.edit)).toBe("edit"); expect(pageOf(U.listing)).toBe("listing"); expect(pageOf(U.login)).toBe("login");
     expect(pageOf(U.sales)).toBe("sales"); expect(pageOf(U.home)).toBe("home"); expect(pageOf("https://poshmark.com/brand/x")).toBe("other");
   });
-  it("checkLogin reads the header and says so; unclear pages stop", () => {
+  it("checkLogin reads the header and says so; an unclear page answers 'unknown' (not an error)", () => {
     load("header-in"); expect(signedIn(document)).toBe(true); expect(step("checkLogin", U.home)).toEqual({ kind: "done", loggedIn: true });
     load("header-out"); expect(step("checkLogin", U.home)).toEqual({ kind: "done", loggedIn: false });
     expect(step("checkLogin", U.login)).toEqual({ kind: "done", loggedIn: false });
     document.body.innerHTML = "<main>hello</main>";
-    expect(step("checkLogin", U.home)).toMatchObject({ kind: "stop", code: "unexpected_page" });
+    expect(step("checkLogin", U.home)).toMatchObject({ kind: "done", loggedIn: null });
+    document.body.innerHTML = '<header><button role="menuitem">Log Out</button></header>';
+    expect(step("checkLogin", U.home)).toEqual({ kind: "done", loggedIn: true });
   });
   it("signed out or a login redirect stops a job with signed_out", () => {
     load("header-out", "edit-select");

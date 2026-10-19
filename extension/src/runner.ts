@@ -18,7 +18,7 @@ export interface Browser {
   hasPermission(m: ExtMarketplace): Promise<boolean>;
 }
 export type RunOutcome =
-  | { ok: true; result: DoneResult; loggedIn?: boolean; sales?: ExtScanSale[]; nextCursor?: string | null; listingIds?: string[] }
+  | { ok: true; result: DoneResult; loggedIn?: boolean | null; sales?: ExtScanSale[]; nextCursor?: string | null; listingIds?: string[] }
   | { ok: false; code: ResultCode; message: string };
 
 export const MAX_STEPS = 8;

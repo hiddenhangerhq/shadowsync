@@ -7,7 +7,7 @@ export type PageName = "home" | "listing" | "edit" | "create" | "sales" | "close
 export interface StepInput { action: Action; marketplace: ExtMarketplace; payload: Record<string, unknown>; phase: string; url: string }
 export interface DoneResult { externalId?: string; url?: string; alreadyDone?: boolean; note?: string; deleted?: boolean; fallback?: string }
 export type StepResult =
-  | { kind: "done"; result?: DoneResult; loggedIn?: boolean; sales?: ExtScanSale[]; nextCursor?: string | null; listingIds?: string[] }
+  | { kind: "done"; result?: DoneResult; loggedIn?: boolean | null; sales?: ExtScanSale[]; nextCursor?: string | null; listingIds?: string[] }
   | { kind: "goto"; page: PageName; phase: string; user?: string }
   | { kind: "wait"; phase: string; ms: number }
   | { kind: "stop"; code: ResultCode; message: string; keepTab?: boolean };

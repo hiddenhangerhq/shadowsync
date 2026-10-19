@@ -35,11 +35,11 @@ async function render() {
     if (!isConn) {
       const b = el("button", "Connect") as HTMLButtonElement;
       // Must run from this click (user gesture). Grants ONLY this marketplace's site.
-      b.onclick = async () => { if (await chrome.permissions.request({ origins: originsFor(m) })) { say("Checking sign-in..."); const x = await send<{ ok: boolean; loggedIn?: boolean; error?: string }>({ type: "connected", marketplace: m }); say(x.ok ? (x.loggedIn ? "Signed in" : `Sign in to ${h.label} in this browser`) : (x.error ?? "")); } void render(); };
+      b.onclick = async () => { if (await chrome.permissions.request({ origins: originsFor(m) })) { say("Checking sign-in..."); const x = await send<{ ok: boolean; loggedIn?: boolean; error?: string }>({ type: "connected", marketplace: m }); say(x.ok ? (x.loggedIn === false ? `Sign in to ${h.label} in this browser` : x.loggedIn ? "Signed in" : "Connected (sign-in unknown; jobs will still run)") : (x.error ?? "")); } void render(); };
       top.append(b); li.append(top); ul.append(li); continue;
     }
     const login = s.logins[m];
-    top.append(el("span", login ? (login.loggedIn ? "signed in" : "signed out") : "not checked", `badge ${login?.loggedIn ? "ok" : "bad"}`));
+    top.append(el("span", !login ? "not checked" : login.loggedIn === true ? "signed in" : login.loggedIn === false ? "signed out" : "sign-in unknown", `badge ${login?.loggedIn === false ? "bad" : login?.loggedIn ? "ok" : ""}`));
     li.append(top);
     const v = readiness(s.pacing, m, Date.now()), mpPaused = !!s.pacing.mp[m]?.paused;
     const srv = s.server?.paused[m];
@@ -50,7 +50,7 @@ async function render() {
     const p = el("button", mpPaused ? "Resume" : "Pause") as HTMLButtonElement;
     p.onclick = async () => { await send({ type: "pauseMarketplace", marketplace: m, paused: !mpPaused }); void render(); };
     const c = el("button", "Check sign-in") as HTMLButtonElement;
-    c.onclick = async () => { say("Checking..."); const x = await send<{ ok: boolean; loggedIn?: boolean; error?: string }>({ type: "checkLogin", marketplace: m }); say(x.ok ? (x.loggedIn ? "Signed in" : "Signed out") : (x.error ?? "")); void render(); };
+    c.onclick = async () => { say("Checking..."); const x = await send<{ ok: boolean; loggedIn?: boolean; error?: string }>({ type: "checkLogin", marketplace: m }); say(x.ok ? (x.loggedIn === true ? "Signed in" : x.loggedIn === false ? "Signed out" : "Could not tell; jobs will still run") : (x.error ?? "")); void render(); };
     const d = el("button", "Disconnect", "link") as HTMLButtonElement;
     d.onclick = async () => { await chrome.permissions.remove({ origins: originsFor(m) }); void render(); };
     row.append(p, c, d); li.append(row); ul.append(li);
@@ -76,7 +76,7 @@ $("pauseDevice").addEventListener("click", async () => {
   await send({ type: "pauseDevice", paused: !r.state.pacing.devicePaused });
   void render();
 });
-$("pollNow").addEventListener("click", async () => { say("Checking..."); const r = await send<{ ok: boolean; ran?: number; skipped?: string; error?: string }>({ type: "pollNow" }); say(r.ok ? (r.skipped ? `Skipped: ${r.skipped}` : `${r.ran ?? 0} job(s) run`) : (r.error ?? "")); void render(); });
+$("pollNow").addEventListener("click", async () => { say("Checking..."); const r = await send<{ ok: boolean; ran?: number; notes?: string[]; skipped?: string; error?: string }>({ type: "pollNow" }); say(r.ok ? (r.skipped ? `Skipped: ${r.skipped}` : [`${r.ran ?? 0} job(s) run`, ...(r.notes ?? [])].join(" · ")) : (r.error ?? "")); void render(); });
 $("scanNow").addEventListener("click", async () => { say("Scanning sales..."); const r = await send<{ ok: boolean; notes?: string[]; error?: string }>({ type: "scanNow" }); say(r.ok ? (r.notes?.join(" · ") || "Nothing connected to scan") : (r.error ?? "")); void render(); });
 $("unpair").addEventListener("click", async () => { if (confirm("Unpair this browser? Also revoke it in Settings > Extension.")) { await send({ type: "unpair" }); void render(); } });
 void render();

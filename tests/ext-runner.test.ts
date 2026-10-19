@@ -107,10 +107,53 @@ describe("worker end to end on the mock API", () => {
     expect(h.state.logins.poshmark?.loggedIn).toBe(true);
     const { job } = await enqueue();
     h.advance(120_000);
-    expect(await w.poll(h.deps)).toEqual({ ran: 1 });
+    expect(await w.poll(h.deps)).toEqual({ ran: 1, notes: [] });
     expect((await svc.store.jobs.get(job.id))?.status).toBe("succeeded");
     expect((await svc.store.listings.list()).find((x) => x.id === l.id)?.status).toBe("ended");
     expect(h.fb.log.opened).toContain(`https://poshmark.com/edit-listing/${ID}`);
+  });
+  it("regression (jobs stuck in queued): an unclear or failed sign-in check does not hold jobs back; only a definite sign-out does", async () => {
+    const { svc, enqueue } = await setup();
+    let feed: StepResult = { kind: "done", loggedIn: null };
+    const h = harness(svc, (u, phase) => (u.endsWith("/feed") ? feed : phase === "start" ? { kind: "wait", phase: "saved", ms: 1 } : { kind: "done", result: { note: "ok" } }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    // Never checked at all: still asks for jobs.
+    const a = (await enqueue()).job;
+    h.advance(120_000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 1 });
+    expect((await svc.store.jobs.get(a.id))?.status).toBe("succeeded");
+    // Checked, could not tell: not an error (no error-burst pause), still runs jobs.
+    for (let i = 0; i < 4; i++) { h.advance(120_000); await w.checkLogin(h.deps, "poshmark"); }
+    expect(h.state.logins.poshmark?.loggedIn).toBeNull();
+    expect(h.state.pacing.mp.poshmark?.pausedUntil ?? 0).toBeLessThan(Date.now());
+    const b = (await enqueue()).job;
+    h.advance(120_000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 1 });
+    expect((await svc.store.jobs.get(b.id))?.status).toBe("succeeded");
+    // A check that errors (page did not answer) leaves the state alone and does not block either.
+    feed = { kind: "stop", code: "unexpected_page", message: "The page did not answer" };
+    h.advance(120_000); await w.checkLogin(h.deps, "poshmark");
+    const c = (await enqueue()).job;
+    h.advance(120_000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 1 });
+    expect((await svc.store.jobs.get(c.id))?.status).toBe("succeeded");
+    // Definitely signed out: holds jobs, and Check now says why.
+    feed = { kind: "done", loggedIn: false };
+    h.advance(120_000); await w.checkLogin(h.deps, "poshmark");
+    const d = (await enqueue()).job;
+    h.advance(120_000);
+    expect(await w.poll(h.deps)).toEqual({ ran: 0, notes: ["Poshmark: signed out (sign in, then press Check sign-in)"] });
+    expect((await svc.store.jobs.get(d.id))?.status).toBe("queued");
+  });
+  it("Check now says why nothing ran (waiting between jobs, paused here or on the website)", async () => {
+    const { svc, enqueue } = await setup();
+    const h = harness(svc, () => ({ kind: "done", loggedIn: true }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    await w.checkLogin(h.deps, "poshmark");
+    await enqueue();
+    expect(await w.poll(h.deps)).toEqual({ ran: 0, notes: ["Poshmark: Waiting between jobs"] });
+    await w.pauseDevice(h.deps, true);
+    expect(await w.poll(h.deps)).toEqual({ ran: 0, notes: ["This browser is paused"] });
   });
   it("kill switch: a paused browser claims nothing and opens nothing", async () => {
     const { svc, enqueue } = await setup();

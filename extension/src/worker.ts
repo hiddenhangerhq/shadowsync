@@ -11,7 +11,8 @@ export interface LogLine { at: number; text: string }
 export interface ExtState {
   token: string | null; deviceId: string | null; deviceLabel: string | null;
   pacing: PacingState;
-  logins: Partial<Record<ExtMarketplace, { loggedIn: boolean; at: number }>>;
+  /** loggedIn null = checked but could not tell. Only a definite "signed out" holds jobs back. */
+  logins: Partial<Record<ExtMarketplace, { loggedIn: boolean | null; at: number }>>;
   server: { devicePaused: boolean; paused: Partial<Record<ExtMarketplace, string | null>> } | null;
   lastPollAt: number | null; lastError: string | null; log: LogLine[];
   /** Last listing scan per marketplace (once a day): flags Sold items still live. */
@@ -50,7 +51,7 @@ async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getS
   const out = await runAction(d.browser, check.value); // never throws; a crashed worker leaves "busy", which goes stale after 15 min
   await update(d, (s) => {
     s.pacing = finish(s.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code }, d.now(), d.rand());
-    if (out.ok && typeof out.loggedIn === "boolean") s.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
+    if (out.ok && out.loggedIn !== undefined) s.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
     if (!out.ok && out.code === "signed_out") s.logins[m] = { loggedIn: false, at: d.now() };
     if (!out.ok) addLog(s, d.now(), `${HOST_TABLE[m].label} ${action}: ${out.message}`);
   });
@@ -59,7 +60,7 @@ async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getS
 
 export async function checkLogin(d: Deps, m: ExtMarketplace) {
   const r = await runLocal(d, m, "checkLogin", {});
-  if (r.ok) await update(d, (s) => addLog(s, d.now(), `${HOST_TABLE[m].label}: ${r.loggedIn ? "signed in" : "signed out"}`));
+  if (r.ok) await update(d, (s) => addLog(s, d.now(), `${HOST_TABLE[m].label}: ${r.loggedIn === true ? "signed in" : r.loggedIn === false ? "signed out" : "sign-in unknown (jobs still run)"}`));
   return r;
 }
 export async function checkAllLogins(d: Deps) {
@@ -69,14 +70,27 @@ export async function checkAllLogins(d: Deps) {
 }
 
 /** Poll: heartbeat + login states, then run what the server handed us, one at a time. */
-export async function poll(d: Deps): Promise<{ ran: number } | { skipped: string }> {
+/** Signed out for sure (only then are jobs held back). Not checked yet, or checked but unclear, still asks for jobs: a job that meets the
+ *  sign-in page stops as "signed_out" and goes back in the queue once you sign in (regression: jobs stayed "queued" forever). */
+export const signedOut = (s: ExtState, m: ExtMarketplace) => s.logins[m]?.loggedIn === false;
+
+export async function poll(d: Deps): Promise<{ ran: number; notes?: string[] } | { skipped: string }> {
   const s = await d.store.load();
   if (!s.token) return { skipped: "not_paired" };
   const mps = await connected(d);
   const now = d.now();
   const marketplaces: Record<string, boolean> = {};
-  for (const m of mps) if (s.logins[m]) marketplaces[m] = s.logins[m]!.loggedIn;
-  const ready = s.pacing.devicePaused ? [] : mps.filter((m) => s.logins[m]?.loggedIn && isReady(s.pacing, m, now));
+  for (const m of mps) marketplaces[m] = !signedOut(s, m);
+  const ready = s.pacing.devicePaused ? [] : mps.filter((m) => !signedOut(s, m) && isReady(s.pacing, m, now));
+  // Why a marketplace is not asking for jobs, for "Check now".
+  const notes: string[] = [];
+  if (!mps.length) notes.push("No marketplace connected (press Connect)");
+  if (s.pacing.devicePaused) notes.push("This browser is paused");
+  else for (const m of mps) {
+    const v = readiness(s.pacing, m, now);
+    if (signedOut(s, m)) notes.push(`${HOST_TABLE[m].label}: signed out (sign in, then press Check sign-in)`);
+    else if (!v.ok) notes.push(`${HOST_TABLE[m].label}: ${v.reason}`);
+  }
   let res;
   try { res = await d.api.poll({ extensionVersion: d.version, marketplaces, ready, limit: ready.length }); }
   catch (e) { return handleApiError(d, e); }
@@ -87,7 +101,9 @@ export async function poll(d: Deps): Promise<{ ran: number } | { skipped: string
   });
   let ran = 0;
   for (const raw of res.jobs) { await runJob(d, raw); ran++; }
-  return { ran };
+  if (res.device.paused) notes.push("Paused on the website (Settings > Extension)");
+  for (const x of res.marketplaces) if (x.paused) notes.push(`${HOST_TABLE[x.marketplace as ExtMarketplace]?.label ?? x.marketplace}: paused on the website`);
+  return { ran, notes };
 }
 
 async function report(d: Deps, jobId: string, r: { ok: true; result?: object } | { ok: false; code: ResultCode; message: string }) {
@@ -113,7 +129,7 @@ export async function runJob(d: Deps, raw: { jobId: string } & Record<string, un
   await update(d, (st) => {
     st.pacing = finish(st.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code }, d.now(), d.rand());
     if (!out.ok && out.code === "signed_out") st.logins[m] = { loggedIn: false, at: d.now() };
-    if (out.ok && typeof out.loggedIn === "boolean") st.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
+    if (out.ok && out.loggedIn !== undefined) st.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
     addLog(st, d.now(), `${HOST_TABLE[m].label} ${a.action}: ${out.ok ? (out.result.note ?? "done") : out.message}`);
   });
   await report(d, raw.jobId, out.ok ? { ok: true, result: out.result } : { ok: false, code: out.code, message: out.message });
@@ -128,7 +144,7 @@ export async function scan(d: Deps, opts: { salesOnly?: boolean } = {}): Promise
   if (s.pacing.devicePaused) return { notes: ["This browser is paused"] };
   for (const m of await connected(d)) {
     const label = HOST_TABLE[m].label;
-    if (!s.logins[m]?.loggedIn) { notes.push(`${label}: not signed in (press Check sign-in)`); continue; }
+    if (signedOut(s, m)) { notes.push(`${label}: signed out (sign in, then press Check sign-in)`); continue; }
     if (serverPaused(s, m)) { notes.push(`${label}: paused`); continue; }
     if (!isReady(s.pacing, m, d.now())) { notes.push(`${label}: ${((v) => (v.ok ? "not ready" : v.reason))(readiness(s.pacing, m, d.now()))}`); continue; }
     try {
