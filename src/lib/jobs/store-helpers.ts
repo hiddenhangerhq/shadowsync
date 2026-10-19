@@ -2,18 +2,18 @@
 import type { DataStore } from "../data/interfaces";
 import type { Job, JobOutcome, Listing, NewListing } from "../data/types";
 import { isOpen } from "./state-machine";
-import { computeNeedsAction } from "./needs-action";
+import { computeNeedsAction, deleteFallbackKey, NEEDS_ACTION_EVENTS } from "./needs-action";
 
 export function makeNeedsAction(getStore: () => DataStore): DataStore["needsAction"] {
   return {
     async list(now = new Date()) {
       const s = getStore();
-      // The three log event kinds the rules read, fetched separately so a long history of other events can never push an "ignore" out of range.
-      const [items, listings, sales, jobs, ignored, cancelled, unmatched] = await Promise.all([
+      // The log event kinds the rules read, fetched separately so a long history of other events can never push an "ignore" out of range.
+      const [items, listings, sales, jobs, ...logs] = await Promise.all([
         s.items.list(), s.listings.list(), s.sales.list(), s.jobs.list(),
-        s.itemSyncLog.list({ event: "needs_action_ignored" }), s.itemSyncLog.list({ event: "sale_cancelled" }), s.itemSyncLog.list({ event: "sale_unmatched" }),
+        ...NEEDS_ACTION_EVENTS.map((event) => s.itemSyncLog.list({ event })),
       ]);
-      return computeNeedsAction({ items, listings, sales, jobs, syncLog: [...ignored, ...cancelled, ...unmatched], now });
+      return computeNeedsAction({ items, listings, sales, jobs, syncLog: logs.flat(), now });
     },
     async ignore(key, note) {
       await getStore().itemSyncLog.append({ event: "needs_action_ignored", source: "manual", ref: key, detail: note ?? "Ignored by you" });
@@ -48,8 +48,20 @@ export async function completeJob(store: DataStore, id: string, outcome: JobOutc
     if (l && l.status === "active") {
       await store.listings.upsert({ ...asNewListing(l), status: job.jobType === "mark_sold" ? "sold" : "ended", endedAt: now.toISOString() });
     }
-    await store.itemSyncLog.append({ event: job.jobType === "mark_sold" ? "marked_sold" : "delisted", source, itemId: job.itemId, listingId: job.listingId,
-      marketplace: job.marketplace, jobId: job.id, detail: "Confirmed by the worker" });
+    // Marketplace delete or fallback: the listing row, its old id/URL, the item and the history all stay in Shadow Sync.
+    const r = job.result ?? {};
+    const fallback = typeof r.fallback === "string" ? r.fallback.slice(0, 300) : null;
+    if (r.deleted === true) {
+      await store.itemSyncLog.append({ event: "deleted", source, itemId: job.itemId, listingId: job.listingId, marketplace: job.marketplace, jobId: job.id,
+        detail: `Deleted on ${job.marketplace} after the confirmed sale (kept here as ended)` });
+    } else {
+      await store.itemSyncLog.append({ event: job.jobType === "mark_sold" ? "marked_sold" : "delisted", source, itemId: job.itemId, listingId: job.listingId,
+        marketplace: job.marketplace, jobId: job.id, detail: fallback ? "Set to Not For Sale (delete was not possible)" : "Confirmed by the worker" });
+      if (fallback) {
+        await store.itemSyncLog.append({ event: "delete_fallback", source, itemId: job.itemId, listingId: job.listingId, marketplace: job.marketplace, jobId: job.id,
+          ref: deleteFallbackKey(job.listingId), detail: `Could not delete on ${job.marketplace} (${fallback}); set to Not For Sale instead. Delete it there by hand, then press Mark delisted.` });
+      }
+    }
   } else if (job.status === "succeeded" && job.jobType === "create_listing" && job.itemId && typeof job.result?.externalId === "string") {
     // Store the marketplace's listing id at once, so a retry can never post the item twice (spec 2).
     const r = job.result as { externalId: string; url?: unknown };

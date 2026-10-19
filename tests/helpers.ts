@@ -80,7 +80,7 @@ export async function extTablesExist(): Promise<boolean> {
   let sb: SupabaseClient;
   try { ({ sb } = await rawSignedIn(0)); } catch { return false; }
   const fn = await sb.rpc("ext_poll", { p_token: "ssd_" + "x".repeat(43), p_version: "0.0.1" });
-  const t = await sb.from("alert_prefs").select("*").limit(1);
+  const t = await sb.from("marketplace_settings").select("*").limit(1);
   return !!fn.error && /ext:invalid_token/.test(fn.error.message) && !t.error;
 }
 
@@ -114,8 +114,8 @@ async function wipeWith({ sb, userId }: { sb: SupabaseClient; userId: string }) 
   }
   // 0005 tables first (they reference items). They may not exist yet if migration 0005 has not been run: that is fine.
   // item_sync_log and job_events are append-only for users, so they cannot be wiped (job_events go with their job by cascade).
-  for (const t of ["jobs", "extension_devices", "sales_scan_cursors", "alert_prefs"]) {
-    const r = await sb.from(t).delete().not(t === "alert_prefs" ? "user_id" : "id", "is", null);
+  for (const t of ["jobs", "extension_devices", "sales_scan_cursors", "alert_prefs", "marketplace_settings"]) {
+    const r = await sb.from(t).delete().not(t === "alert_prefs" || t === "marketplace_settings" ? "user_id" : "id", "is", null);
     if (r.error && !MISSING.has(r.error.code ?? "")) throw new Error(`wipe ${t}: ${r.error.message}`);
   }
   for (const t of ["sales", "sync_log", "marketplace_connections", "items"]) {

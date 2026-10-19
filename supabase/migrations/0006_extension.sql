@@ -35,6 +35,16 @@ create table if not exists alert_prefs (
   updated_at timestamptz not null default now()
 );
 
+-- Per marketplace: what "delist" means once a sale is CONFIRMED. Default delete on the marketplace, falling back to Not For Sale.
+-- Deleting on a marketplace never deletes anything in Shadow Sync (the listing row is kept as ended, with its old id and URL).
+create table if not exists marketplace_settings (
+  user_id uuid not null references profiles(id) on delete cascade default auth.uid(),
+  marketplace marketplace not null,
+  sold_action text not null default 'delete' check (sold_action in ('delete', 'not_for_sale')),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, marketplace)
+);
+
 -- Request counters for the device API. No client can read or write it.
 create table if not exists ext_rate (
   key text primary key,
@@ -45,6 +55,10 @@ create table if not exists ext_rate (
 alter table extension_pairings enable row level security;
 alter table alert_prefs enable row level security;
 alter table ext_rate enable row level security;
+alter table marketplace_settings enable row level security;
+drop policy if exists marketplace_settings_all on marketplace_settings;
+create policy marketplace_settings_all on marketplace_settings for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+revoke all on marketplace_settings from anon;
 drop policy if exists pairings_select on extension_pairings;
 create policy pairings_select on extension_pairings for select using (user_id = auth.uid());
 revoke insert, update, delete on extension_pairings from anon, authenticated;
@@ -53,6 +67,22 @@ drop policy if exists alert_prefs_all on alert_prefs;
 create policy alert_prefs_all on alert_prefs for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 revoke all on alert_prefs from anon;
 revoke all on ext_rate from anon, authenticated;
+
+-- Relist guard (lib/jobs/sold.ts isRelist): an item that is Sold can't get a create_listing, an edit, or a quantity above 0 on ANY
+-- marketplace. Quantity 0 (a delist) is allowed. Undoing the sale on the item (status no longer 'sold') is the only way to clear it.
+create or replace function _jobs_relist_guard() returns trigger language plpgsql security definer set search_path = public as $$
+declare v_status text; p jsonb := coalesce(new.payload, '{}'::jsonb);
+begin
+  if new.item_id is null or new.job_type not in ('create_listing', 'update_listing') then return new; end if;
+  select status into v_status from items where id = new.item_id and user_id = new.user_id;
+  if v_status is distinct from 'sold' then return new; end if;
+  if new.job_type = 'update_listing' and p ? 'quantity' and not (p ? 'title' or p ? 'price' or p ? 'description')
+     and jsonb_typeof(p -> 'quantity') = 'number' and (p ->> 'quantity')::numeric = 0 then return new; end if;
+  raise exception 'relist_blocked: this item is Sold in Shadow Sync; undo the sale first' using errcode = 'P0001';
+end $$;
+revoke execute on function _jobs_relist_guard() from public, anon, authenticated;
+drop trigger if exists jobs_relist_guard on jobs;
+create trigger jobs_relist_guard before insert on jobs for each row execute function _jobs_relist_guard();
 
 -- ---------------------------------------------------------------- private helpers
 create or replace function _ext_hash(t text) returns text language sql immutable set search_path = public as $$
@@ -233,7 +263,10 @@ begin
     'jobs', coalesce((select jsonb_agg(jsonb_build_object(
         'job', to_jsonb(j),
         'listing', case when l.id is null then null else jsonb_build_object('external_id', l.external_id, 'url', l.url) end,
-        'item', case when i.id is null then null else jsonb_build_object('title', i.title, 'description', i.description, 'asking_price', i.asking_price, 'brand', i.brand, 'size', i.size) end
+        'item', case when i.id is null then null else jsonb_build_object('title', i.title, 'description', i.description, 'asking_price', i.asking_price, 'brand', i.brand, 'size', i.size, 'status', i.status) end,
+        'sold_action', coalesce((select ms.sold_action from marketplace_settings ms where ms.user_id = j.user_id and ms.marketplace = j.marketplace), 'delete'),
+        -- Delete happens ONLY for a confirmed sale: the job's saleId is a stored sale matched to this job's item.
+        'sale_confirmed', (j.item_id is not null and exists (select 1 from sales sa where sa.user_id = j.user_id and sa.id::text = j.payload ->> 'saleId' and sa.item_id = j.item_id))
       ) order by j.priority, j.next_run_at, j.created_at, j.id)
       from jobs j left join listings l on l.id = j.listing_id and l.user_id = j.user_id left join items i on i.id = j.item_id and i.user_id = j.user_id
       where j.id = any(v_ids)), '[]'::jsonb)
@@ -325,8 +358,20 @@ begin
   if j.status = 'succeeded' and j.job_type in ('delist','mark_sold') and j.listing_id is not null and j.item_id is not null then
     update listings set status = case when j.job_type = 'mark_sold' then 'sold' else 'ended' end, ended_at = now()
       where id = j.listing_id and user_id = j.user_id and status = 'active';
-    insert into item_sync_log (user_id, item_id, listing_id, marketplace, event, source, job_id, detail)
-    values (j.user_id, j.item_id, j.listing_id, j.marketplace, case when j.job_type = 'mark_sold' then 'marked_sold' else 'delisted' end, j.executor, j.id, 'Confirmed by the worker');
+    -- Deleted on the marketplace, or set to Not For Sale because delete wasn't possible (completeJob). Nothing is deleted here.
+    if p_result ->> 'deleted' = 'true' then
+      insert into item_sync_log (user_id, item_id, listing_id, marketplace, event, source, job_id, detail)
+      values (j.user_id, j.item_id, j.listing_id, j.marketplace, 'deleted', j.executor, j.id, 'Deleted on ' || j.marketplace || ' after the confirmed sale (kept here as ended)');
+    else
+      insert into item_sync_log (user_id, item_id, listing_id, marketplace, event, source, job_id, detail)
+      values (j.user_id, j.item_id, j.listing_id, j.marketplace, case when j.job_type = 'mark_sold' then 'marked_sold' else 'delisted' end, j.executor, j.id,
+        case when jsonb_typeof(p_result -> 'fallback') = 'string' then 'Set to Not For Sale (delete was not possible)' else 'Confirmed by the worker' end);
+      if jsonb_typeof(p_result -> 'fallback') = 'string' then
+        insert into item_sync_log (user_id, item_id, listing_id, marketplace, event, source, job_id, ref, detail)
+        values (j.user_id, j.item_id, j.listing_id, j.marketplace, 'delete_fallback', j.executor, j.id, 'delete_fallback:' || j.listing_id,
+          'Could not delete on ' || j.marketplace || ' (' || left(p_result ->> 'fallback', 300) || '); set to Not For Sale instead. Delete it there by hand, then press Mark delisted.');
+      end if;
+    end if;
   elsif j.status = 'succeeded' and j.job_type = 'create_listing' and j.item_id is not null and jsonb_typeof(p_result -> 'externalId') = 'string' then
     v_ext := left(p_result ->> 'externalId', 80);
     v_url := case when jsonb_typeof(p_result -> 'url') = 'string' and _ext_url_ok(j.marketplace::text, p_result ->> 'url') then left(p_result ->> 'url', 500) end;
@@ -457,6 +502,13 @@ begin
         insert into item_sync_log (user_id, item_id, marketplace, event, source, ref, detail)
         values (d.user_id, owner.id, v_mp, 'sale_detected', 'extension', 'sale:' || rec.id, 'Order ' || v_order || ' sold for ' || (s ->> 'price'));
       end if;
+      -- Already Sold and a NEW order for it from another sale: it was live again somewhere (processScanReport). Flag, never relist.
+      if owner.status = 'sold' and before_sale.id is null
+         and exists (select 1 from sales x where x.user_id = d.user_id and x.item_id = owner.id and x.id <> rec.id) then
+        insert into item_sync_log (user_id, item_id, marketplace, event, source, ref, detail)
+        values (d.user_id, owner.id, v_mp, 'sold_seen_live', 'extension', 'sold_again:' || rec.id,
+          'Sold again on ' || p_marketplace || ' (order ' || v_order || ') although it was already Sold. Check for a double sale.');
+      end if;
       if owner.status <> 'sold' then
         update items set status = 'sold', date_sold = coalesce(date_sold, (s ->> 'soldAt')::date), price_sold = coalesce(price_sold, (s ->> 'price')::numeric),
           platform = coalesce(platform, p_marketplace), updated_at = now()
@@ -498,6 +550,32 @@ begin
   end;
   return jsonb_build_object('ok', true, 'stored', n_stored, 'duplicates', n_dup, 'jobs_created', n_jobs, 'unmatched', n_unmatched, 'cancelled', n_cancel, 'cursor_advanced', true);
 end $$;
+
+-- ---------------------------------------------------------------- extension: listing scan (processListingsReport)
+-- Listing ids seen LIVE on a marketplace. Those belonging to an item Sold in Shadow Sync are flagged once per listing per day.
+create or replace function ext_listings_report(p_token text, p_marketplace text, p_external_ids jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare d extension_devices; v_day text := to_char(now() at time zone 'utc', 'YYYY-MM-DD'); n_seen int; n_flag int := 0; l record;
+begin
+  d := _ext_device(p_token);
+  if not (p_marketplace = any(_ext_marketplaces())) then raise exception 'ext:bad_request'; end if;
+  if jsonb_typeof(p_external_ids) <> 'array' or jsonb_array_length(p_external_ids) > 1000 then raise exception 'ext:bad_request'; end if;
+  select count(distinct e) into n_seen from jsonb_array_elements_text(p_external_ids) e;
+  for l in
+    select li.id, li.item_id, li.marketplace from listings li join items it on it.id = li.item_id and it.user_id = li.user_id
+    where li.user_id = d.user_id and li.marketplace = p_marketplace::marketplace and it.status = 'sold'
+      and li.external_id in (select jsonb_array_elements_text(p_external_ids))
+  loop
+    if exists (select 1 from item_sync_log where user_id = d.user_id and event = 'sold_seen_live' and ref = 'sold_live:' || l.id || ':' || v_day) then continue; end if;
+    insert into item_sync_log (user_id, item_id, listing_id, marketplace, event, source, ref, detail)
+    values (d.user_id, l.item_id, l.id, l.marketplace, 'sold_seen_live', 'extension', 'sold_live:' || l.id || ':' || v_day,
+      'Sold in Shadow Sync but still live on ' || p_marketplace || '. Delete or end it there, then press Mark delisted.');
+    n_flag := n_flag + 1;
+  end loop;
+  return jsonb_build_object('seen', n_seen, 'flagged', n_flag);
+end $$;
+revoke execute on function ext_listings_report(text, text, jsonb) from public;
+grant execute on function ext_listings_report(text, text, jsonb) to anon, authenticated;
 
 -- The device API is for the extension (anon key + device token). Signed-in users may call it too; it still only accepts a token.
 revoke execute on function ext_pair_complete(text, text, text, text), ext_poll(text, text, jsonb, text[], int), ext_job_start(text, uuid),

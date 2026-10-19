@@ -5,7 +5,7 @@ import type { DataStore } from "../data/interfaces";
 import type { ConnectionType, Item, Job, JobExecutor, JobType, Listing, Marketplace, MarketplaceConnection, NewJob, Sale, Source } from "../data/types";
 import { delistKey } from "./state-machine";
 import { asNewListing } from "./store-helpers";
-import { cancelledSaleKey, unmatchedSaleKey } from "./needs-action";
+import { cancelledSaleKey, soldAgainKey, soldLiveKey, unmatchedSaleKey } from "./needs-action";
 
 export interface DetectedSale {
   orderId: string;
@@ -150,6 +150,11 @@ export async function processScanReport(store: DataStore, report: ScanReport, no
         await store.itemSyncLog.append({ event: "sale_detected", source: report.source, itemId: owner.id, marketplace: report.marketplace, ref: `sale:${rec.id}`,
           detail: `Order ${s.orderId} sold for ${s.price}` });
       }
+      // Sold in Shadow Sync already and a NEW order arrives for it from another sale: it was live again somewhere. Flag it (never relist/undo).
+      if (owner.status === "sold" && !before && [...known.values()].some((x) => x.itemId === owner.id && x.id !== rec.id)) {
+        await store.itemSyncLog.append({ event: "sold_seen_live", source: report.source, itemId: owner.id, marketplace: report.marketplace, ref: soldAgainKey(rec.id),
+          detail: `Sold again on ${report.marketplace} (order ${s.orderId}) although it was already Sold. Check for a double sale.` });
+      }
       // Idempotent on every pass (a replay repairs a crash between "sale stored" and "item updated").
       if (owner.status !== "sold") {
         const upd = await store.items.update(owner.id, { status: "sold", dateSold: owner.dateSold ?? s.soldAt, priceSold: owner.priceSold ?? s.price, platform: owner.platform ?? report.marketplace });
@@ -182,4 +187,27 @@ export async function processScanReport(store: DataStore, report: ScanReport, no
     await store.cursors.fail({ marketplace: report.marketplace, scopeKey, error, now }).catch(() => undefined);
     return { ...res, ok: false, cursorAdvanced: false, error };
   }
+}
+
+/**
+ * Listing scan (extension getListings today; weekly reconcile later): the marketplace listing ids seen LIVE. Any that belong to an item Sold in
+ * Shadow Sync are flagged once per listing per day into "Sold but still active". Nothing is changed on the marketplace or the item.
+ */
+export async function processListingsReport(store: DataStore, input: { marketplace: Marketplace; externalIds: string[]; source: "api" | "extension" | "reconcile" }, now = new Date()) {
+  const ids = new Set(input.externalIds);
+  const [items, listings, prior] = await Promise.all([store.items.list({ status: "sold" }), store.listings.list(), store.itemSyncLog.list({ event: "sold_seen_live" })]);
+  const sold = new Map(items.map((i) => [i.id, i]));
+  const day = now.toISOString().slice(0, 10);
+  const have = new Set(prior.map((e) => e.ref));
+  let flagged = 0;
+  for (const l of listings) {
+    if (l.marketplace !== input.marketplace || !l.externalId || !ids.has(l.externalId) || !sold.has(l.itemId)) continue;
+    const ref = soldLiveKey(l.id, day);
+    if (have.has(ref)) continue;
+    await store.itemSyncLog.append({ event: "sold_seen_live", source: input.source, itemId: l.itemId, listingId: l.id, marketplace: l.marketplace, ref,
+      detail: `Sold in Shadow Sync but still live on ${l.marketplace}. Delete or end it there, then press Mark delisted.` });
+    have.add(ref);
+    flagged++;
+  }
+  return { seen: ids.size, flagged };
 }

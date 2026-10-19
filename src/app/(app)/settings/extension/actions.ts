@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { getServices } from "@/lib/data";
 import { newPairingCode, formatPairingCode } from "@/lib/ext/tokens";
 import { isExtMarketplace } from "@/lib/ext/protocol";
-import { DeviceAuthError, SchemaMissingError } from "@/lib/data/types";
+import { DeviceAuthError, SchemaMissingError, SOLD_ACTIONS, type SoldAction } from "@/lib/data/types";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PATH = "/settings/extension";
@@ -37,5 +37,14 @@ export async function pauseMarketplaceAction(id: string, marketplace: string, pa
   if (!UUID.test(id) || !isExtMarketplace(marketplace)) return;
   const { store } = await getServices();
   await store.devices.setMarketplacePaused(id, marketplace, paused);
+  revalidatePath(PATH);
+}
+
+/** Per marketplace: delete after a confirmed sale (default, falls back to Not For Sale) or always Not For Sale. */
+export async function setSoldActionAction(marketplace: string, form: FormData) {
+  const v = String(form.get("soldAction") ?? "");
+  if (!isExtMarketplace(marketplace) || !(SOLD_ACTIONS as string[]).includes(v)) return;
+  const { store } = await getServices();
+  await store.marketplaceSettings.setSoldAction(marketplace, v as SoldAction);
   revalidatePath(PATH);
 }

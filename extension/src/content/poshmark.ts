@@ -59,6 +59,59 @@ function setNotForSale(doc: Document, phase: string): StepResult | "already" | n
   return { kind: "wait", phase: "pick", ms: 800 };
 }
 
+// ---- Delete (after a confirmed sale) with a Not For Sale fallback. Phases: start -> del_confirm -> del_done; a fallback re-opens the edit
+// page with phase "fb-<reason>-start" and runs the Not For Sale steps, reporting `fallback` so the server lists it as "Sold but still active".
+const FALLBACK: Record<string, string> = {
+  offer: "Poshmark blocked the delete (an offer, order or sold lock is pending)",
+  nodelete: "Poshmark showed no Delete option for this listing",
+  refused: "Poshmark refused the delete",
+};
+const BLOCKED = /\b(active|pending|open) offers?\b|offer (is )?pending|can'?t (be )?delete|cannot (be )?delete|unable to delete|not able to delete|has (an )?(open|pending) order/i;
+const deleteButton = (doc: Document) => byText<HTMLElement>(doc, 'button, a, [role="button"]', /^delete( (this )?listing)?$/i)[0] ?? null;
+const dialog = (doc: Document) => Array.from(doc.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"], .modal')).find((d) => !d.hidden) ?? null;
+const fallbackTo = (code: keyof typeof FALLBACK): StepResult => ({ kind: "goto", page: "edit", phase: `fb-${code}-start` });
+
+function deleteStep(doc: Document, page: Page, phase: string): StepResult {
+  if (phase === "del_done") {
+    // Gone: Poshmark sends you to your closet/feed, or the listing page no longer exists.
+    if (page === "closet" || page === "home" || (page === "listing" && notFound(doc))) return { kind: "done", result: { deleted: true, note: "Deleted on Poshmark" } };
+    if (BLOCKED.test(textOf(doc.body))) return fallbackTo("offer");
+    if (page === "edit" && formError(doc)) return fallbackTo("refused");
+    return stop("unexpected_page", "Pressed Delete but could not confirm the listing is gone. Please check it.");
+  }
+  if (page === "listing") {
+    if (soldBadge(doc)) return { kind: "done", result: { alreadyDone: true, note: "Already sold on Poshmark (sold listings can't be deleted)" } };
+    return { kind: "goto", page: "edit", phase: "start" };
+  }
+  if (page !== "edit") return stop("unexpected_page", `Expected the edit page, got ${page}`);
+  if (BLOCKED.test(textOf(doc.body))) return fallbackTo("offer");
+  if (phase === "del_confirm") {
+    const d = dialog(doc);
+    if (d && BLOCKED.test(textOf(d))) return fallbackTo("offer");
+    const yes = d ? byText<HTMLElement>(d, 'button, [role="button"]', /^(yes|delete|yes,? delete( it)?|confirm)$/i)[0] : undefined;
+    if (!yes) return stop("unexpected_page", "Pressed Delete but no confirmation appeared. Nothing was deleted.");
+    click(yes);
+    return { kind: "wait", phase: "del_done", ms: 4000 };
+  }
+  const del = deleteButton(doc);
+  if (!del) return fallbackTo("nodelete");
+  click(del);
+  return { kind: "wait", phase: "del_confirm", ms: 800 };
+}
+
+function endStep(doc: Document, page: Page, phase: string, mode: unknown, note: string): StepResult {
+  const fb = /^fb-([a-z]+)-(\w+)$/.exec(phase);
+  if (fb) {
+    const r = availabilityStep(doc, page, fb[2], note);
+    const reason = FALLBACK[fb[1]] ?? FALLBACK.refused;
+    if (r.kind === "done") return { kind: "done", result: { ...r.result, alreadyDone: false, fallback: reason, note: `${reason}; set to Not For Sale instead` } };
+    if (r.kind === "wait") return { ...r, phase: `fb-${fb[1]}-${r.phase}` };
+    if (r.kind === "goto") return { ...r, phase: `fb-${fb[1]}-${r.phase}` };
+    return r;
+  }
+  return mode === "delete" ? deleteStep(doc, page, phase) : availabilityStep(doc, page, phase, note);
+}
+
 function availabilityStep(doc: Document, page: Page, phase: string, note: string): StepResult {
   if (page === "listing") {
     if (soldBadge(doc)) return { kind: "done", result: { alreadyDone: true, note: "Already sold on Poshmark" } };
@@ -161,6 +214,7 @@ export function poshmarkStep(doc: Document, input: StepInput): StepResult {
     if (input.action === "checkLogin") return { kind: "done", loggedIn: false };
     return stop("signed_out", "Signed out of Poshmark. Sign in in this browser; waiting jobs then continue by themselves.");
   }
+  if (input.phase === "del_done" && (input.action === "delist" || input.action === "markSold") && notFound(doc)) return { kind: "done", result: { deleted: true, note: "Deleted on Poshmark" } };
   if (notFound(doc)) return stop("listing_not_found", "Poshmark says this page or listing does not exist. Check it, then use Mark delisted or Retry.");
   const auth = signedIn(doc);
   if (input.action === "checkLogin") {
@@ -170,8 +224,8 @@ export function poshmarkStep(doc: Document, input: StepInput): StepResult {
   if (auth === false) return stop("signed_out", "Signed out of Poshmark. Sign in in this browser; waiting jobs then continue by themselves.");
   const p = input.payload;
   switch (input.action) {
-    case "delist": return availabilityStep(doc, page, input.phase, "Set to Not For Sale");
-    case "markSold": return availabilityStep(doc, page, input.phase, "Set to Not For Sale (sold elsewhere)");
+    case "delist": return endStep(doc, page, input.phase, p.mode, "Set to Not For Sale");
+    case "markSold": return endStep(doc, page, input.phase, p.mode, "Set to Not For Sale (sold elsewhere)");
     case "updateQuantity":
       return p.quantity === 0 ? availabilityStep(doc, page, input.phase, "Quantity 0: set to Not For Sale") : editFieldsStep(doc, page, input.phase, p, true);
     case "updateListing": return editFieldsStep(doc, page, input.phase, p, false);
@@ -189,8 +243,16 @@ export function poshmarkStep(doc: Document, input: StepInput): StepResult {
         return user ? { kind: "goto", page: "closet", phase: "list", user } : stop("unexpected_page", "Could not find your closet link");
       }
       if (page !== "closet") return stop("unexpected_page", `Expected your closet, got ${page}`);
-      const ids = new Set(Array.from(doc.querySelectorAll("a[href*='/listing/']")).map((a) => /([a-f0-9]{24})(?:[/?#]|$)/i.exec(a.getAttribute("href") ?? "")?.[1]).filter(Boolean));
-      return { kind: "done", result: { note: `${ids.size} listings seen on the first closet page` } };
+      // Only tiles that are still for sale count as live (sold / Not For Sale tiles are skipped).
+      const ids = new Set<string>();
+      for (const a of Array.from(doc.querySelectorAll("a[href*='/listing/']"))) {
+        const id = /([a-f0-9]{24})(?:[/?#]|$)/i.exec(a.getAttribute("href") ?? "")?.[1];
+        if (!id) continue;
+        const tile = a.closest('[data-test*="tile" i], .tile, .card, li, article') ?? a;
+        if (/\bsold\b|not for sale/i.test(textOf(tile))) continue;
+        ids.add(id.toLowerCase());
+      }
+      return { kind: "done", listingIds: [...ids], result: { note: `${ids.size} live listings seen on the first closet page` } };
     }
   }
 }

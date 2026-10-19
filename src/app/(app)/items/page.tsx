@@ -1,17 +1,26 @@
 import Link from "next/link";
 import { getServices, ITEM_STATUSES, type ItemStatus } from "@/lib/data";
 import { brandColor } from "@/lib/brands";
+import { loadSoldViews } from "@/lib/jobs/sold";
+import { HOST_TABLE, isExtMarketplace } from "@/lib/ext/protocol";
 
 export const dynamic = "force-dynamic";
-const TABS: ItemStatus[] = ["draft", "listed", "sold"];
-const LABEL: Record<string, string> = { draft: "Draft", listed: "Listed", sold: "Sold" };
+type Tab = ItemStatus | "sold_active";
+const TABS: Tab[] = ["draft", "listed", "sold_active", "sold"];
+const LABEL: Record<string, string> = { draft: "Draft", listed: "Listed", sold: "Sold", sold_active: "Sold but still active" };
+const mpName = (m: string) => (isExtMarketplace(m) ? HOST_TABLE[m].label : m.charAt(0).toUpperCase() + m.slice(1));
 const money = (n: number | null) => (n == null ? "" : `$${n.toFixed(2)}`);
 
 export default async function Items({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
   const { tab } = await searchParams;
-  const active: ItemStatus = (ITEM_STATUSES as string[]).includes(tab ?? "") && tab !== "delisted" ? (tab as ItemStatus) : "draft";
+  const active: Tab = tab === "sold_active" || ((ITEM_STATUSES as string[]).includes(tab ?? "") && tab !== "delisted") ? (tab as Tab) : "draft";
   const { store, storage } = await getServices();
-  const [counts, items] = await Promise.all([store.items.countsByStatus(), store.items.list({ status: active })]);
+  const status: ItemStatus = active === "sold_active" ? "sold" : active;
+  const [rawCounts, all, views] = await Promise.all([store.items.countsByStatus(), store.items.list({ status }), loadSoldViews(store)]);
+  // A sold item is only "Sold" once it is delisted or deleted everywhere; until then it is "Sold but still active" (and moves back by itself).
+  const stillActive = [...views.values()].filter((v) => v.state === "sold_still_active").length;
+  const counts: Record<string, number> = { ...rawCounts, sold: rawCounts.sold - stillActive, sold_active: stillActive };
+  const items = status !== "sold" ? all : all.filter((i) => (views.get(i.id)?.state === "sold_still_active") === (active === "sold_active"));
   const covers = await store.photos.coverByItem(items.map((i) => i.id));
   const urls = Object.fromEntries(await Promise.all(Object.entries(covers).map(async ([id, p]) => [id, await storage.getUrl(p.path)] as const)));
   return (
@@ -35,6 +44,9 @@ export default async function Items({ searchParams }: { searchParams: Promise<{ 
               {i.sku ?? "no SKU"}
               {i.status === "sold" ? ` · sold ${money(i.priceSold)}` : i.askingPrice != null ? ` · ${money(i.askingPrice)}` : ""}
             </div>
+            {views.get(i.id)?.state === "sold_still_active" && (
+              <div className="small" style={{ color: "var(--warn)" }}>Still active on {views.get(i.id)!.marketplaces.map(mpName).join(", ")}</div>
+            )}
           </div>
         </Link>
       ))}

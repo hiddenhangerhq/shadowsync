@@ -6,7 +6,7 @@ import { makeApi } from "../extension/src/api";
 import type { StepResult } from "../extension/src/steps";
 import type { ActionRequest, ExtMarketplace } from "../src/lib/ext/protocol";
 import { backends } from "./helpers";
-import { extJob, extPairComplete, extPoll, extScanNext, extScanReport, pairStart } from "../src/lib/ext/api";
+import { extJob, extListingsReport, extPairComplete, extPoll, extScanNext, extScanReport, pairStart } from "../src/lib/ext/api";
 import type { Services } from "../src/lib/data/interfaces";
 import { resetRateLimits } from "../src/lib/ext/ratelimit";
 
@@ -31,7 +31,7 @@ const req = (o: Partial<ActionRequest> = {}): ActionRequest => ({ jobId: null, m
 describe("runner", () => {
   it("opens only table URLs, follows goto by page name, closes the tab", async () => {
     const { b, log } = fakeBrowser((u, phase) => (phase === "start" && u.includes("/listing/") ? { kind: "goto", page: "edit", phase: "start" } : u.includes("/edit-listing/") && phase === "start" ? { kind: "wait", phase: "saved", ms: 5000 } : { kind: "done", result: { note: "ok" } }));
-    expect(await runAction(b, req())).toEqual({ ok: true, result: { note: "ok" }, loggedIn: undefined, sales: undefined, nextCursor: undefined });
+    expect(await runAction(b, req())).toMatchObject({ ok: true, result: { note: "ok" } });
     expect(log.opened).toEqual([`https://poshmark.com/edit-listing/${ID}`]);
     expect(log.closed).toEqual([7]);
   });
@@ -73,6 +73,7 @@ function harness(svc: Services, steps: (url: string, phase: string) => StepResul
     else if (path === "/api/v1/ext/poll") r = await extPoll(svc, token, body, ip);
     else if (path === "/api/v1/ext/scan/next") r = await extScanNext(svc, token, body, ip);
     else if (path === "/api/v1/ext/scan/report") r = await extScanReport(svc, token, body, ip);
+    else if (path === "/api/v1/ext/scan/listings") r = await extListingsReport(svc, token, body, ip);
     else if (m) r = await extJob(svc, m[2] as "start", token, m[1], body, ip);
     else throw new Error(path);
     return new Response(JSON.stringify(r.body), { status: r.status });
@@ -163,7 +164,10 @@ describe("worker end to end on the mock API", () => {
     await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
     await w.checkLogin(h.deps, "poshmark");
     h.advance(120_000);
-    await w.scan(h.deps);
+    await w.scan(h.deps); // first: the daily listing scan
+    expect(h.state.listingsScanAt?.poshmark).toBeTruthy();
+    h.advance(120_000);
+    await w.scan(h.deps); // then sales
     const jobs = await svc.store.jobs.list({});
     expect(jobs.some((j) => j.marketplace === "ebay")).toBe(true);
   });

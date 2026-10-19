@@ -2,6 +2,7 @@
 // (mock.ts, supabase-impl.ts). To move to Firebase, add firebase-impl.ts and
 // register it in index.ts. Nothing else changes.
 import type {
+  MarketplaceSetting, SoldAction, ExtListingsResult,
   AuthUser, CreditAction, CreditEntry, ExtensionDevice, HeartbeatInput, Item, ItemPatch, ItemStatus, ItemSyncEvent, ItemSyncLogEntry,
   Job, JobEvent, JobExecutor, JobOutcome, JobStatus, Listing, Marketplace, MarketplaceConnection, MarketplaceLoginState,
   NeedsActionEntry, NewConnection, NewDevice, NewItem, NewItemSyncLogEntry, NewJob, NewListing, NewPhoto, NewSale,
@@ -118,6 +119,11 @@ export interface DataStore {
   pairing: {
     start(code: string, now?: Date): Promise<{ expiresAt: string }>;
   };
+  /** Per marketplace: delete (default, with Not For Sale fallback) or Not For Sale, once a sale is confirmed (0006). */
+  marketplaceSettings: {
+    list(): Promise<MarketplaceSetting[]>;
+    setSoldAction(marketplace: Marketplace, soldAction: SoldAction): Promise<MarketplaceSetting>;
+  };
   /** Settings > Alerts (0006). Stored preference only; no SMS provider is connected. */
   alerts: {
     get(): Promise<AlertPrefs>;
@@ -138,7 +144,7 @@ export interface DataStore {
     /** Newest first. */
     list(filter?: { itemId?: string; event?: ItemSyncEvent; limit?: number }): Promise<ItemSyncLogEntry[]>;
   };
-  /** The "Sold but still listed" queue (spec 6A), computed from data so it empties itself once a delist is confirmed. */
+  /** The "Sold but still active" queue (spec 6A), computed from data so it empties itself once a delist is confirmed. */
   needsAction: {
     list(now?: Date): Promise<NeedsActionEntry[]>;
     /** Hide one entry (by its key). Logged, never deletes anything. */
@@ -177,6 +183,8 @@ export interface DeviceGateway {
   scanNext(token: string, marketplace: Marketplace, now?: Date): Promise<ExtScanNext>;
   /** Store the sales, create delist / mark_sold jobs, and only then move the cursor (spec 3A). */
   scanReport(token: string, report: { marketplace: Marketplace; sales: ExtScanSale[]; nextCursor: string | null }, now?: Date): Promise<ExtScanResult>;
+  /** Listing ids seen live on the marketplace; Sold items among them are flagged into "Sold but still active". */
+  listingsReport(token: string, report: { marketplace: Marketplace; externalIds: string[] }, now?: Date): Promise<ExtListingsResult>;
   jobStart(token: string, jobId: string, now?: Date): Promise<Job>;
   jobProgress(token: string, jobId: string, message: string): Promise<void>;
   jobExtend(token: string, jobId: string, now?: Date): Promise<Job>;

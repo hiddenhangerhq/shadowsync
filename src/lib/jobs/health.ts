@@ -92,7 +92,7 @@ export function computeHealth(i: HealthInput): Health {
   const stale = i.jobs.filter((j) => (j.jobType === "delist" || j.jobType === "mark_sold") && isOpen(j.status) && t - new Date(j.createdAt).getTime() > OVERSELL_RISK_MS);
   if (stale.length) items.push({ key: "oversell", level: "red", title: `${stale.length} delist${stale.length === 1 ? "" : "s"} unfinished for over an hour`, detail: "Risk of overselling" });
   const failed = i.needsAction.filter((n) => n.kind === "delist_failed").length;
-  if (failed) items.push({ key: "delist_failed", level: "red", title: `${failed} failed delist${failed === 1 ? "" : "s"}`, detail: "Fix them in the Sold but still listed list" });
+  if (failed) items.push({ key: "delist_failed", level: "red", title: `${failed} failed delist${failed === 1 ? "" : "s"}`, detail: "Fix them in the Sold but still active list" });
 
   items.sort((a, b) => RANK[b.level] - RANK[a.level]);
   const level = items.reduce<HealthLevel>((m, x) => (RANK[x.level] > RANK[m] ? x.level : m), "green");

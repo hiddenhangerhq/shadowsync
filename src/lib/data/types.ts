@@ -195,6 +195,19 @@ export class InsufficientCreditsError extends Error {
 // ---------------------------------------------------------------- job queue (spec: job-queue-extension-spec.md sections 2, 3A, 6, 6A)
 
 /** Thrown when a table or function from migration 0005 is missing (David has not run the SQL yet). Pages degrade instead of crashing. */
+/** Relist guard: an item that is Sold in Shadow Sync cannot be listed, edited or restocked anywhere until you undo the sale. */
+export class RelistBlockedError extends Error {
+  code = "relist_blocked" as const;
+  constructor(public itemId: string) {
+    super("This item is Sold in Shadow Sync, so it can't be listed, edited or restocked. Undo the sale on the item first if it came back.");
+    this.name = "RelistBlockedError";
+  }
+}
+/** Per marketplace: what "delist" means once a sale is confirmed. Default delete, with Not For Sale as the fallback. */
+export type SoldAction = "delete" | "not_for_sale";
+export const SOLD_ACTIONS: SoldAction[] = ["delete", "not_for_sale"];
+export interface MarketplaceSetting { marketplace: Marketplace; soldAction: SoldAction; updatedAt: string | null }
+
 export class SchemaMissingError extends Error {
   constructor(what = "job queue tables", public migration: "0005" | "0006" = "0005") {
     super(`Not set up yet: ${what} (run migration ${migration} in Supabase)`);
@@ -320,7 +333,11 @@ export interface ExtPollInput {
 export interface ClaimedExtJob {
   job: Job;
   listing: { externalId: string | null; url: string | null } | null;
-  item: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null } | null;
+  item: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null; status: ItemStatus } | null;
+  /** This marketplace's setting (default "delete"). */
+  soldAction: SoldAction;
+  /** The job's saleId is a stored sale matched to this job's item. Delete happens ONLY when this is true. */
+  saleConfirmed: boolean;
 }
 export interface ExtPollResult {
   device: { id: string; label: string; paused: boolean };
@@ -334,6 +351,7 @@ export interface ExtScanSale {
   orderId: string; soldAt: string; price: number; fees?: number | null; sku?: string | null; title?: string | null;
   shipBy?: string | null; externalListingId?: string | null; cancelled?: boolean;
 }
+export interface ExtListingsResult { seen: number; flagged: number }
 export interface ExtScanResult { ok: boolean; stored: number; duplicates: number; jobsCreated: number; unmatched: number; cancelled: number; cursorAdvanced: boolean; error?: string }
 
 /** Settings > Alerts. SMS is a stored preference only: no provider is wired up (no paid services). */
@@ -353,7 +371,13 @@ export interface ScanCursor {
 
 export type ItemSyncEvent =
   | "listed" | "delisted" | "marked_sold" | "sale_detected" | "sale_unmatched" | "sale_cancelled"
-  | "delist_queued" | "delist_failed" | "relisted" | "linked" | "reconciled" | "needs_action_ignored" | "job_failed";
+  | "delist_queued" | "delist_failed" | "relisted" | "linked" | "reconciled" | "needs_action_ignored" | "job_failed"
+  /** Deleted on the marketplace (only after a confirmed sale). Nothing in Shadow Sync is deleted: the listing row is kept as "ended". */
+  | "deleted"
+  /** Delete failed or was blocked; the listing was set to Not For Sale instead (shows in "Sold but still active" until cleared). */
+  | "delete_fallback"
+  /** A scan saw an item that is Sold in Shadow Sync live (or selling) again. */
+  | "sold_seen_live";
 export type ItemSyncSource = "api" | "extension" | "reconcile" | "manual";
 export interface ItemSyncLogEntry {
   id: string;
@@ -373,7 +397,7 @@ export type NewItemSyncLogEntry = Partial<Omit<ItemSyncLogEntry, "id" | "userId"
 
 export interface WorkerRun { leasesExpired: number; requeued: number; ranAt: string }
 
-/** One row of the "Sold but still listed" queue (spec 6A). Computed from data, so it empties itself when the delist is confirmed. */
+/** One row of the "Sold but still active" queue (spec 6A). Computed from data, so it empties itself when the delist is confirmed. */
 export type NeedsActionKind = "sold_still_listed" | "delist_failed" | "delist_stuck" | "unmatched_sale" | "sale_cancelled";
 export type NeedsActionButton = "retry" | "open_listing" | "mark_delisted" | "ignore";
 export interface NeedsActionEntry {

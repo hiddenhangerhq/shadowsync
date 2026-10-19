@@ -4,16 +4,16 @@ import { formatAge } from "@/lib/jobs/health";
 import { ignoreNeedsActionAction, markDelistedAction, retryJobAction } from "@/app/(app)/jobs/actions";
 
 const KIND: Record<NeedsActionEntry["kind"], string> = {
-  delist_failed: "Delist failed", delist_stuck: "Delist stuck", sold_still_listed: "Sold, still listed",
+  delist_failed: "Delist failed", delist_stuck: "Delist stuck", sold_still_listed: "Sold, still active",
   unmatched_sale: "Unknown item", sale_cancelled: "Sale cancelled",
 };
 
-/** "Sold but still listed" (spec 6A). Renders nothing when there is nothing to do, so a healthy account stays clean. */
+/** "Sold but still active" (spec 6A). Renders nothing when there is nothing to do, so a healthy account stays clean. */
 export default function NeedsActionPanel({ entries }: { entries: NeedsActionEntry[] }) {
   if (!entries.length) return null;
   return (
-    <section className="card na" aria-label="Sold but still listed">
-      <div className="row between"><h2 style={{ margin: 0 }}>Sold but still listed<span className="badge-count">{entries.length}</span></h2></div>
+    <section className="card na" aria-label="Sold but still active">
+      <div className="row between"><h2 style={{ margin: 0 }}>Sold but still active<span className="badge-count">{entries.length}</span></h2></div>
       <p className="muted small" style={{ margin: "4px 0 8px" }}>These need you. Each row clears itself once the delist is confirmed.</p>
       {entries.map((e) => (
         <div key={e.key} className={`na-row ${e.kind}`}>

@@ -2,7 +2,7 @@
 // around these. Auth is the logged-in session (the data layer's auth). The extension's /ext/* endpoints are a later step.
 import type { Services } from "../data/interfaces";
 import { IllegalTransitionError } from "./state-machine";
-import { SchemaMissingError, type Job } from "../data/types";
+import { RelistBlockedError, SchemaMissingError, type Job } from "../data/types";
 import { executorFor } from "./sale-detection";
 import { parseCreateJob, parseLimit, parseStatusFilter, isUuid } from "./validate";
 import { buildTimeline } from "./timeline";
@@ -20,6 +20,7 @@ async function guard(svc: Services, fn: () => Promise<ApiResult>): Promise<ApiRe
   } catch (e) {
     if (e instanceof SchemaMissingError) return fail(503, e.message, { code: "schema_missing" });
     if (e instanceof IllegalTransitionError) return fail(409, e.message, { code: "illegal_transition", from: e.from, to: e.to });
+    if (e instanceof RelistBlockedError) return fail(409, e.message, { code: "relist_blocked", itemId: e.itemId });
     const m = e instanceof Error ? e.message : String(e);
     if (/not found/i.test(m)) return fail(404, m);
     if (/changed by another worker/i.test(m)) return fail(409, m);

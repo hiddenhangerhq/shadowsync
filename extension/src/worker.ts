@@ -14,6 +14,8 @@ export interface ExtState {
   logins: Partial<Record<ExtMarketplace, { loggedIn: boolean; at: number }>>;
   server: { devicePaused: boolean; paused: Partial<Record<ExtMarketplace, string | null>> } | null;
   lastPollAt: number | null; lastError: string | null; log: LogLine[];
+  /** Last listing scan per marketplace (once a day): flags Sold items still live. */
+  listingsScanAt?: Partial<Record<ExtMarketplace, number>>;
 }
 export const emptyState = (): ExtState => ({
   token: null, deviceId: null, deviceLabel: null, pacing: emptyPacing(), logins: {}, server: null, lastPollAt: null, lastError: null, log: [],
@@ -38,7 +40,7 @@ export async function connected(d: Deps): Promise<ExtMarketplace[]> {
 const serverPaused = (s: ExtState, m: ExtMarketplace) => !!s.server?.devicePaused || (s.server?.paused[m] ?? null) !== null;
 
 /** Run a local (job-less) action through the same pacing as server jobs. */
-async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getSales", payload: Record<string, unknown>): Promise<RunOutcome | { ok: false; code: "deferred"; message: string }> {
+async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getSales" | "getListings", payload: Record<string, unknown>): Promise<RunOutcome | { ok: false; code: "deferred"; message: string }> {
   const s0 = await d.store.load();
   const v = canRun(s0.pacing, m, action, d.now());
   if (!v.ok) return { ok: false, code: "deferred", message: v.reason };
@@ -124,6 +126,18 @@ export async function scan(d: Deps) {
   for (const m of await connected(d)) {
     if (!s.logins[m]?.loggedIn || serverPaused(s, m) || !isReady(s.pacing, m, d.now())) continue;
     try {
+      // Once a day, a listing scan instead: the server flags any item Sold in Shadow Sync that is still live here.
+      if (d.now() - (s.listingsScanAt?.[m] ?? 0) > 24 * 3600_000) {
+        const r = await runLocal(d, m, "getListings", {});
+        if (r.ok) {
+          const rep = await d.api.listingsReport(m, r.listingIds ?? []);
+          await update(d, (st) => {
+            st.listingsScanAt = { ...(st.listingsScanAt ?? {}), [m]: d.now() };
+            if (rep.flagged) addLog(st, d.now(), `${HOST_TABLE[m].label}: ${rep.flagged} sold item(s) still live, see Sold but still active`);
+          });
+        }
+        continue;
+      }
       const next = await d.api.scanNext(m);
       const r = await runLocal(d, m, "getSales", { cursor: next.cursor, limit: Math.min(next.limit, 100) });
       if (!r.ok) continue;

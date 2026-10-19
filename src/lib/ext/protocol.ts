@@ -70,8 +70,9 @@ const optUrl = str({ max: 500, pattern: /^https:\/\// }); // host checked separa
 const listingRef = { externalId: str({ min: 1, max: 80 }), url: optUrl } as const;
 export const ACTION_SCHEMAS = {
   checkLogin: obj({}),
-  delist: obj({ ...listingRef, saleId: text(80), soldOn: text(40) }, ["url", "saleId", "soldOn"]),
-  markSold: obj({ ...listingRef, saleId: text(80), soldOn: text(40) }, ["url", "saleId", "soldOn"]),
+  // mode: "delete" only after a confirmed sale and when that marketplace's setting allows it; otherwise (or if absent) Not For Sale.
+  delist: obj({ ...listingRef, saleId: text(80), soldOn: text(40), mode: oneOf(["delete", "not_for_sale"] as const) }, ["url", "saleId", "soldOn", "mode"]),
+  markSold: obj({ ...listingRef, saleId: text(80), soldOn: text(40), mode: oneOf(["delete", "not_for_sale"] as const) }, ["url", "saleId", "soldOn", "mode"]),
   updateQuantity: obj({ ...listingRef, quantity: num({ min: 0, max: 999, int: true }) }, ["url"]),
   updateListing: obj({ ...listingRef, title: text(80), description: text(5000), price: num({ min: 1, max: 100_000 }) }, ["url", "title", "description", "price"]),
   createListing: obj(
@@ -84,7 +85,14 @@ export const ACTION_SCHEMAS = {
 export type ActionPayload<A extends Action> = ReturnType<(typeof ACTION_SCHEMAS)[A]>;
 
 /** What the extension runs: one job, already turned into a fixed action. */
-export interface ActionRequest { jobId: string | null; marketplace: ExtMarketplace; action: Action; payload: Record<string, unknown> }
+export interface ActionRequest {
+  jobId: string | null; marketplace: ExtMarketplace; action: Action; payload: Record<string, unknown>;
+  /** The item is Sold in Shadow Sync: the extension refuses createListing / updateListing / updateQuantity above 0 (relist guard). */
+  itemSold?: boolean;
+}
+/** Relist guard, extension side (same rule as lib/jobs/sold.ts isRelist). */
+export const isRelistAction = (a: Action, payload: Record<string, unknown>) =>
+  a === "createListing" || a === "updateListing" || (a === "updateQuantity" && Number(payload.quantity) > 0);
 
 /** Job type -> action. update_listing with only a quantity becomes updateQuantity. sync_status is the read-only listing check. */
 export function actionForJob(jobType: JobType, payload: Record<string, unknown>): Action {
@@ -100,7 +108,9 @@ export function actionForJob(jobType: JobType, payload: Record<string, unknown>)
 /** Server side: build the action payload for a claimed job from OUR data only (listing id from our listing row, fields from the item). */
 export interface JobContext {
   listing?: { externalId: string | null; url: string | null } | null;
-  item?: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null } | null;
+  item?: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null; status?: string } | null;
+  soldAction?: "delete" | "not_for_sale";
+  saleConfirmed?: boolean;
 }
 export function buildActionRequest(job: Pick<Job, "id" | "marketplace" | "jobType" | "payload">, ctx: JobContext): ActionRequest | null {
   if (!isExtMarketplace(job.marketplace)) return null;
@@ -114,7 +124,10 @@ export function buildActionRequest(job: Pick<Job, "id" | "marketplace" | "jobTyp
   const pick = (keys: string[]) => Object.fromEntries(keys.filter((k) => p[k] !== undefined && p[k] !== null).map((k) => [k, p[k]]));
   let payload: Record<string, unknown>;
   switch (action) {
-    case "delist": case "markSold": payload = { ...ref(), ...pick(["saleId", "soldOn"]) }; break;
+    case "delist": case "markSold":
+      // Delete ONLY after a confirmed sale (stored + matched to this item) and if this marketplace's setting is "delete" (the default).
+      payload = { ...ref(), ...pick(["saleId", "soldOn"]), mode: (ctx.soldAction ?? "delete") === "delete" && ctx.saleConfirmed === true ? "delete" : "not_for_sale" };
+      break;
     case "updateQuantity": payload = { ...ref(), ...pick(["quantity"]) }; break;
     case "updateListing": payload = { ...ref(), ...pick(["title", "description", "price"]) }; break;
     case "createListing": {
@@ -131,7 +144,7 @@ export function buildActionRequest(job: Pick<Job, "id" | "marketplace" | "jobTyp
     }
     default: payload = {};
   }
-  return { jobId: job.id, marketplace: job.marketplace, action, payload };
+  return { jobId: job.id, marketplace: job.marketplace, action, payload, ...(ctx.item?.status === "sold" ? { itemSold: true } : {}) };
 }
 
 // ---------------------------------------------------------------- results the extension reports
@@ -139,13 +152,15 @@ export function buildActionRequest(job: Pick<Job, "id" | "marketplace" | "jobTyp
 export const RESULT_CODES = [
   "signed_out", "captcha", "challenge", "verification_required", "unexpected_page", "review_and_submit", "listing_not_found",
   "timeout", "network", "rate_limited", "deferred", "unavailable",
-  "not_supported", "invalid_payload", "url_not_allowed", "rejected", "permission_missing", "action_failed",
+  "not_supported", "invalid_payload", "url_not_allowed", "rejected", "permission_missing", "action_failed", "relist_blocked",
 ] as const;
 export type ResultCode = (typeof RESULT_CODES)[number];
 export const resultSchema = obj(
   {
     ok: bool, code: oneOf(RESULT_CODES), message: str({ max: 500 }),
-    result: obj({ externalId: str({ max: 80 }), url: optUrl, alreadyDone: bool, note: str({ max: 300 }) }, ["externalId", "url", "alreadyDone", "note"]),
+    // deleted: removed on the marketplace (kept in Shadow Sync). fallback: why delete wasn't possible (then it was set to Not For Sale).
+    result: obj({ externalId: str({ max: 80 }), url: optUrl, alreadyDone: bool, note: str({ max: 300 }), deleted: bool, fallback: str({ min: 1, max: 300 }) },
+      ["externalId", "url", "alreadyDone", "note", "deleted", "fallback"]),
   },
   ["code", "message", "result"],
 );
@@ -170,5 +185,6 @@ export const saleSchema = obj(
   ["fees", "sku", "title", "shipBy", "externalListingId", "cancelled"],
 );
 export const scanReportSchema = obj({ marketplace: oneOf(EXT_MARKETPLACES), sales: arr(saleSchema, { max: 100 }), nextCursor: nullable(text(200)) });
+export const listingsReportSchema = obj({ marketplace: oneOf(EXT_MARKETPLACES), externalIds: arr(str({ min: 1, max: 80 }), { max: 1000 }) });
 export const progressSchema = obj({ message: str({ min: 1, max: 300 }) });
 export const jobResultSchema = resultSchema;

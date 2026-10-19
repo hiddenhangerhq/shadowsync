@@ -1,4 +1,4 @@
-// "Sold but still listed" (spec 6A): a pure function over data, so the list empties itself once a delist is confirmed.
+// "Sold but still active" (spec 6A): a pure function over data, so the list empties itself once a delist is confirmed.
 import { isOpen } from "./state-machine";
 import type { Item, ItemSyncLogEntry, Job, Listing, NeedsActionEntry, Sale } from "../data/types";
 
@@ -20,6 +20,11 @@ export interface NeedsActionInput {
 export const listingKey = (listingId: string) => `listing:${listingId}`;
 export const unmatchedSaleKey = (saleId: string) => `unmatched_sale:${saleId}`;
 export const cancelledSaleKey = (marketplace: string, orderId: string) => `sale_cancelled:${marketplace}:${orderId}`;
+export const deleteFallbackKey = (listingId: string) => `delete_fallback:${listingId}`;
+export const soldLiveKey = (listingId: string, day: string) => `sold_live:${listingId}:${day}`;
+export const soldAgainKey = (saleId: string) => `sold_again:${saleId}`;
+/** Log events makeNeedsAction must load for these rules. */
+export const NEEDS_ACTION_EVENTS = ["needs_action_ignored", "sale_cancelled", "sale_unmatched", "delete_fallback", "sold_seen_live", "deleted", "delisted"] as const;
 
 export function computeNeedsAction({ items, listings, sales, jobs, syncLog, now }: NeedsActionInput): NeedsActionEntry[] {
   const ignored = new Set(syncLog.filter((e) => e.event === "needs_action_ignored" && e.ref).map((e) => e.ref!));
@@ -75,6 +80,26 @@ export function computeNeedsAction({ items, listings, sales, jobs, syncLog, now 
     const item = e.itemId ? itemById.get(e.itemId) : undefined;
     push({ key: e.ref, kind: "sale_cancelled", itemId: e.itemId, sku: item?.sku ?? null, title: item?.title ?? null, marketplace: e.marketplace, listingId: e.listingId,
       jobId: null, url: null, since: e.at, message: e.detail ?? "A sale was cancelled. Check whether to relist.", actions: ["ignore"] });
+  }
+
+  // 4) Delete failed or was blocked (set to Not For Sale instead), or a Sold item was seen live / selling again.
+  //    Cleared by a later "deleted" or "delisted" (e.g. Mark delisted after you delete it by hand) for that listing, or by Ignore.
+  const clearedAt = new Map<string, string>();
+  for (const e of syncLog) {
+    if ((e.event === "deleted" || e.event === "delisted") && e.listingId && (clearedAt.get(e.listingId) ?? "") < e.at) clearedAt.set(e.listingId, e.at);
+  }
+  const listingById = new Map(listings.map((l) => [l.id, l]));
+  const seen = new Set<string>();
+  for (const e of syncLog) {
+    if ((e.event !== "delete_fallback" && e.event !== "sold_seen_live") || !e.ref || seen.has(e.ref)) continue;
+    seen.add(e.ref);
+    if (e.listingId && (clearedAt.get(e.listingId) ?? "") > e.at) continue;
+    const item = e.itemId ? itemById.get(e.itemId) : undefined;
+    const l = e.listingId ? listingById.get(e.listingId) : undefined;
+    push({ key: e.ref, kind: "sold_still_listed", itemId: e.itemId, sku: item?.sku ?? null, title: item?.title ?? null, marketplace: e.marketplace, listingId: e.listingId,
+      jobId: e.jobId, url: l?.url ?? null, since: e.at,
+      message: e.detail ?? (e.event === "delete_fallback" ? "Could not delete; set to Not For Sale instead" : "Sold item seen live again"),
+      actions: e.listingId ? ["open_listing", "mark_delisted", "ignore"] : ["ignore"] });
   }
 
   return out.sort((a, b) => SEVERITY[a.kind] - SEVERITY[b.kind] || a.since.localeCompare(b.since));

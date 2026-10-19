@@ -8,6 +8,7 @@ import type { Services } from "../src/lib/data/interfaces";
 import { IllegalTransitionError, outcomeFromError } from "../src/lib/jobs/state-machine";
 import { newDeviceToken, newPairingCode } from "../src/lib/ext/tokens";
 import { AUTO_PAUSE_REASON } from "../src/lib/ext/limits";
+import { loadSoldViews } from "../src/lib/jobs/sold";
 
 const ready = !supabaseEnabled || (await extTablesExist());
 if (supabaseEnabled && !ready) console.warn("[ext-contract] Supabase run skipped: migration 0006 is not on the project yet");
@@ -202,6 +203,68 @@ describe.each(targets)("device API contract: $name", (b) => {
     expect((await s.device.scanNext(token, "poshmark")).cursor).toBe("2026-10-18T10:00:00.000Z"); // null = keep
     const sale = (await s.store.sales.list()).find((x) => x.orderId === "P-1");
     expect(sale).toMatchObject({ source: "extension", itemId: item.id, price: 25 });
+  });
+
+  it("sold items: delete only for a confirmed sale; delete or fallback keep everything here; Sold vs Sold but still active; relist guard; sold seen live", async () => {
+    const { s, item, posh, ebay, token, poll } = await setup();
+    const sale = await s.store.sales.record({ itemId: item.id, marketplace: "ebay", orderId: "E-1", soldAt: "2026-10-18", price: 25, fees: null, promo: null, shipProvider: null, shipCost: null, source: "api" });
+    await s.store.items.update(item.id, { status: "sold" });
+    await s.store.listings.upsert({ ...ebay, status: "sold", endedAt: new Date().toISOString() });
+    const enqueue = (payload: Record<string, unknown>) =>
+      s.store.jobs.enqueue({ marketplace: "poshmark", jobType: "mark_sold", executor: "extension", itemId: item.id, listingId: posh.id, payload, nextRunAt: past() }).then((r) => r.job);
+    const runOk = async (id: string, result: Record<string, unknown>) => { await s.device.jobStart(token, id); return s.device.jobResult(token, id, { kind: "success", result }); };
+    const views = async () => (await loadSoldViews(s.store)).get(item.id);
+
+    expect(await views()).toEqual({ state: "sold_still_active", marketplaces: ["poshmark"] });
+    const j1 = await enqueue({ saleId: sale.id });
+    let c = (await poll()).jobs[0];
+    expect(c).toMatchObject({ job: { id: j1.id }, soldAction: "delete", saleConfirmed: true, item: { status: "sold" } });
+    await runOk(j1.id, { deleted: true });
+    // Deleting on the marketplace deletes nothing here: item, sale, listing row (old id + URL) and the history all stay.
+    const kept = (await s.store.listings.listForItem(item.id)).find((l) => l.id === posh.id)!;
+    expect(kept).toMatchObject({ externalId: posh.externalId, url: posh.url, status: "sold" });
+    expect(await s.store.items.get(item.id)).toMatchObject({ title: "Polo", sku: "X0", askingPrice: 25, brand: "Nike", status: "sold" });
+    expect((await s.store.sales.list()).map((x) => x.id)).toContain(sale.id);
+    expect((await s.store.itemSyncLog.list({ itemId: item.id })).map((e) => e.event)).toContain("deleted");
+    expect(await views()).toEqual({ state: "sold", marketplaces: [] });
+
+    // Unconfirmed sale id: never delete. Then a blocked delete falls back to Not For Sale and shows as Sold but still active until cleared.
+    await s.store.listings.upsert({ ...posh, status: "active" });
+    const j2 = await enqueue({ saleId: "11111111-1111-4111-8111-111111111111" });
+    c = (await poll()).jobs[0];
+    expect(c).toMatchObject({ job: { id: j2.id }, saleConfirmed: false });
+    await runOk(j2.id, { fallback: "Poshmark blocked the delete (an offer is pending)" });
+    const na = (await s.store.needsAction.list()).find((n) => n.key === `delete_fallback:${posh.id}`);
+    expect(na).toMatchObject({ kind: "sold_still_listed", marketplace: "poshmark", listingId: posh.id });
+    expect(await views()).toEqual({ state: "sold_still_active", marketplaces: ["poshmark"] });
+    await s.store.needsAction.markDelisted(posh.id);
+    expect((await s.store.needsAction.list()).some((n) => n.key === `delete_fallback:${posh.id}`)).toBe(false);
+    expect(await views()).toEqual({ state: "sold", marketplaces: [] });
+
+    // Per-marketplace setting.
+    await s.store.marketplaceSettings.setSoldAction("poshmark", "not_for_sale");
+    expect((await s.store.marketplaceSettings.list()).find((x) => x.marketplace === "poshmark")?.soldAction).toBe("not_for_sale");
+    await s.store.listings.upsert({ ...posh, status: "active" });
+    const j3 = await enqueue({ saleId: sale.id });
+    c = (await poll()).jobs[0];
+    expect(c).toMatchObject({ job: { id: j3.id }, soldAction: "not_for_sale", saleConfirmed: true });
+    await runOk(j3.id, {});
+
+    // Relist guard: refused for a Sold item on any marketplace; quantity 0 is fine; undoing the sale clears it.
+    const add = (jobType: "create_listing" | "update_listing", payload: Record<string, unknown>) =>
+      s.store.jobs.enqueue({ marketplace: "depop", jobType, executor: "extension", itemId: item.id, payload, nextRunAt: past() });
+    await expect(add("create_listing", {})).rejects.toMatchObject({ name: "RelistBlockedError", code: "relist_blocked" });
+    await expect(add("update_listing", { price: 10 })).rejects.toMatchObject({ name: "RelistBlockedError" });
+    await expect(add("update_listing", { quantity: 3 })).rejects.toMatchObject({ name: "RelistBlockedError" });
+    expect((await add("update_listing", { quantity: 0 })).created).toBe(true);
+
+    // Listing scan: the Sold item still live on Poshmark is flagged (once a day).
+    expect(await s.device.listingsReport(token, { marketplace: "poshmark", externalIds: [posh.externalId!, "f".repeat(24)] })).toEqual({ seen: 2, flagged: 1 });
+    expect(await s.device.listingsReport(token, { marketplace: "poshmark", externalIds: [posh.externalId!] })).toEqual({ seen: 1, flagged: 0 });
+    expect((await s.store.needsAction.list()).some((n) => n.key.startsWith(`sold_live:${posh.id}:`))).toBe(true);
+
+    await s.store.items.update(item.id, { status: "listed" });
+    expect((await add("create_listing", {})).created).toBe(true);
   });
 
   it("isolation: a device only ever reaches its own user's data", async () => {

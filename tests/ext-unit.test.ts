@@ -54,6 +54,15 @@ describe("message allow-list", () => {
     expect(validateAction(job({ action: "createListing", payload: { title: "Polo", price: 20 } })).ok).toBe(true);
     expect(validateAction(job({ action: "getSales", payload: { cursor: null } })).ok).toBe(true);
   });
+  it("relist guard: a Sold item is never listed, edited or restocked by the extension", () => {
+    expect(validateAction(job({ action: "createListing", payload: { title: "Polo", price: 20 }, itemSold: true }))).toMatchObject({ ok: false, code: "relist_blocked" });
+    expect(validateAction(job({ action: "updateListing", payload: { externalId: ID, price: 20 }, itemSold: true }))).toMatchObject({ ok: false, code: "relist_blocked" });
+    expect(validateAction(job({ action: "updateQuantity", payload: { externalId: ID, quantity: 1 }, itemSold: true }))).toMatchObject({ ok: false, code: "relist_blocked" });
+    expect(validateAction(job({ action: "updateQuantity", payload: { externalId: ID, quantity: 0 }, itemSold: true })).ok).toBe(true);
+    expect(validateAction(job({ payload: { externalId: ID, mode: "delete" }, itemSold: true })).ok).toBe(true);
+    expect(validateAction(job({ payload: { externalId: ID, mode: "nuke" } })).ok).toBe(false);
+    expect(validateAction(job({ action: "createListing", payload: { title: "Polo", price: 20 }, itemSold: false })).ok).toBe(true);
+  });
   it("URLs outside the host table are rejected", () => {
     for (const url of ["https://evil.example/listing/x", "https://poshmark.com.evil.com/x", "https://user:pw@poshmark.com/x", "https://poshmark.com:8443/x", "https://www.facebook.com/x"]) {
       expect(validateAction(job({ payload: { externalId: ID, url } }))).toMatchObject({ ok: false, code: "url_not_allowed" });

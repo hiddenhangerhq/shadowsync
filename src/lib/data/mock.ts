@@ -14,8 +14,9 @@ import { completeJob, makeNeedsAction } from "../jobs/store-helpers";
 import type { DeviceGateway } from "./interfaces";
 import { AUTO_PAUSE_REASON, EXT_RATE, PAIRING_MAX_ACTIVE } from "../ext/limits";
 import { isDeviceToken, PAIRING_TTL_MS, sha256Hex } from "../ext/tokens";
-import { initCursor, processScanReport } from "../jobs/sale-detection";
-import { DeviceAuthError, type AlertPrefs } from "./types";
+import { initCursor, processListingsReport, processScanReport } from "../jobs/sale-detection";
+import { DeviceAuthError, RelistBlockedError, type AlertPrefs, type MarketplaceSetting } from "./types";
+import { DEFAULT_SOLD_ACTION, relistBlocked } from "../jobs/sold";
 
 interface MockUser { id: string; email: string; salt: string; hash: string }
 type MockDevice = ExtensionDevice & { tokenHash: string };
@@ -27,17 +28,20 @@ interface Tables {
   jobs: Job[]; jobEvents: JobEvent[]; devices: MockDevice[]; loginState: LoginRow[];
   cursors: ScanCursor[]; itemSyncLog: ItemSyncLogEntry[]; worker: { lastRunAt: string | null };
   pairings: MockPairing[]; alerts: (AlertPrefs & { userId: string })[];
+  marketplaceSettings: (MarketplaceSetting & { userId: string })[];
 }
 const emptyTables = (): Tables => ({
   users: [], profiles: [], items: [], photos: [], listings: [], sales: [], connections: [], syncLog: [], credits: [],
   jobs: [], jobEvents: [], devices: [], loginState: [], cursors: [], itemSyncLog: [], worker: { lastRunAt: null },
-  pairings: [], alerts: [],
+  pairings: [], alerts: [], marketplaceSettings: [],
 });
 /** Rows saved before 0006 have no kill-switch fields. */
 const withPauseDefaults = (r: LoginRow): LoginRow => Object.assign(r, { paused: r.paused ?? false, pausedReason: r.pausedReason ?? null, challengeStreak: r.challengeStreak ?? 0 });
 
 export const MOCK_COOKIE = "ss_mock_session";
-const now = () => new Date().toISOString();
+// Strictly increasing (like Postgres, whose separate statements never share a microsecond), so "happened after" is well defined in tests.
+let lastNow = 0;
+const now = () => { lastNow = Math.max(Date.now(), lastNow + 1); return new Date(lastNow).toISOString(); };
 const hashPw = (pw: string, salt: string) => scryptSync(pw, salt, 32).toString("hex");
 
 /** Shared in-process database, optionally persisted to <dir>/db.json. */
@@ -331,6 +335,8 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
       },
       async enqueue(input) {
         const userId = await uid();
+        const item = input.itemId ? db.t.items.find((i) => i.id === input.itemId && i.userId === userId) : undefined;
+        if (item && relistBlocked(input.jobType, input.payload, item.status)) throw new RelistBlockedError(item.id);
         const dup = sm.findOpenDuplicate(db.t.jobs.filter((j) => j.userId === userId), input.idempotencyKey);
         if (dup) return { job: { ...dup }, created: false };
         if (input.itemId && !db.t.items.some((i) => i.id === input.itemId && i.userId === userId)) throw new Error("Item not found");
@@ -410,6 +416,20 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
         db.t.pairings.push(p);
         db.save();
         return { expiresAt: p.expiresAt };
+      },
+    },
+    marketplaceSettings: {
+      async list() {
+        const userId = await uid();
+        return (db.t.marketplaceSettings ?? []).filter((x) => x.userId === userId).map(({ marketplace, soldAction, updatedAt }) => ({ marketplace, soldAction, updatedAt }));
+      },
+      async setSoldAction(marketplace, soldAction) {
+        const userId = await uid();
+        db.t.marketplaceSettings ??= [];
+        let r = db.t.marketplaceSettings.find((x) => x.userId === userId && x.marketplace === marketplace);
+        if (!r) { r = { userId, marketplace, soldAction: DEFAULT_SOLD_ACTION, updatedAt: null }; db.t.marketplaceSettings.push(r); }
+        r.soldAction = soldAction; r.updatedAt = now();
+        return commit({ marketplace, soldAction, updatedAt: r.updatedAt });
       },
     },
     alerts: {
@@ -637,7 +657,9 @@ function makeDeviceGateway(db: MockDb): DeviceGateway {
           return {
             job: { ...j },
             listing: l ? { externalId: l.externalId, url: l.url } : null,
-            item: it ? { title: it.title, description: it.description, askingPrice: it.askingPrice, brand: it.brand, size: it.size } : null,
+            item: it ? { title: it.title, description: it.description, askingPrice: it.askingPrice, brand: it.brand, size: it.size, status: it.status } : null,
+            soldAction: (db.t.marketplaceSettings ?? []).find((x) => x.userId === d.userId && x.marketplace === j.marketplace)?.soldAction ?? DEFAULT_SOLD_ACTION,
+            saleConfirmed: typeof j.payload?.saleId === "string" && !!j.itemId && db.t.sales.some((x) => x.id === j.payload.saleId && x.userId === d.userId && x.itemId === j.itemId),
           };
         }),
       };
@@ -652,6 +674,10 @@ function makeDeviceGateway(db: MockDb): DeviceGateway {
       const { d, store } = authDevice(token);
       const r = await processScanReport(store, { marketplace: report.marketplace, scopeKey: `device:${d.id}`, source: "extension", sales: report.sales, nextCursor: report.nextCursor }, at);
       return { ok: r.ok, stored: r.stored, duplicates: r.duplicates, jobsCreated: r.jobsCreated, unmatched: r.unmatched, cancelled: r.cancelled, cursorAdvanced: r.cursorAdvanced, ...(r.error ? { error: r.error } : {}) };
+    },
+    async listingsReport(token, report, at = new Date()) {
+      const { store } = authDevice(token);
+      return processListingsReport(store, { marketplace: report.marketplace, externalIds: report.externalIds, source: "extension" }, at);
     },
     async jobStart(token, id, at = new Date()) {
       const { d } = authDevice(token);

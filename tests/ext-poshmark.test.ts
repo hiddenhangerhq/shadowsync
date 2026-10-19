@@ -90,6 +90,55 @@ describe("delist / markSold: set Not For Sale (reversible, never delete)", () =>
   });
 });
 
+describe("delete after a confirmed sale, with a Not For Sale fallback", () => {
+  const D = { externalId: ID, mode: "delete" };
+  const openDialogOnDelete = () => {
+    const dlg = document.querySelector('[role="dialog"]') as HTMLElement;
+    document.querySelector(".delete-listing")!.addEventListener("click", () => { dlg.hidden = false; });
+    return dlg;
+  };
+  it("delete success: Delete, confirm Yes, then the listing is gone", () => {
+    load("header-in", "edit-delete");
+    openDialogOnDelete();
+    expect(step("markSold", U.edit, D)).toEqual({ kind: "wait", phase: "del_confirm", ms: 800 });
+    expect(step("markSold", U.edit, D, "del_confirm")).toEqual({ kind: "wait", phase: "del_done", ms: 4000 });
+    expect(clicked).toEqual(["Delete Listing", "Yes"]);
+    load("header-in", "closet");
+    expect(step("markSold", U.closet, D, "del_done")).toEqual({ kind: "done", result: { deleted: true, note: "Deleted on Poshmark" } });
+    load("header-in", "notfound");
+    expect(step("markSold", U.listing, D, "del_done")).toMatchObject({ kind: "done", result: { deleted: true } });
+  });
+  it("delete blocked (active offer) -> reopen the edit page and set Not For Sale, reporting the fallback; never cancels the offer", () => {
+    load("header-in", "edit-delete");
+    const dlg = openDialogOnDelete();
+    step("delist", U.edit, D);
+    dlg.querySelector("#dlgText")!.textContent = "This listing has an active offer and can't be deleted.";
+    expect(step("delist", U.edit, D, "del_confirm")).toEqual({ kind: "goto", page: "edit", phase: "fb-offer-start" });
+    expect(clicked).toEqual(["Delete Listing"]); // no "Yes", no "Cancel offer"
+    load("header-in", "edit-select");
+    expect(step("delist", U.edit, D, "fb-offer-start")).toEqual({ kind: "wait", phase: "fb-offer-saved", ms: 5000 });
+    expect((document.getElementById("avail") as HTMLSelectElement).value).toBe("not_for_sale");
+    document.body.innerHTML = fx("header-in") + "<main><h1>Nike Polo</h1><span>Not For Sale</span></main>";
+    expect(step("delist", U.listing, D, "fb-offer-saved")).toMatchObject({ kind: "done", result: { alreadyDone: false, fallback: expect.stringMatching(/blocked the delete/) } });
+  });
+  it("no Delete button -> fallback; a missing confirmation stops without deleting; delete refused after Yes -> fallback", () => {
+    load("header-in", "edit-select");
+    expect(step("delist", U.edit, D)).toEqual({ kind: "goto", page: "edit", phase: "fb-nodelete-start" });
+    load("header-in", "edit-delete");
+    expect(step("delist", U.edit, D, "del_confirm")).toMatchObject({ kind: "stop", code: "unexpected_page" });
+    load("header-in", "edit-delete");
+    document.body.insertAdjacentHTML("beforeend", "<div role='alert'>Something went wrong</div>");
+    expect(step("delist", U.edit, D, "del_done")).toEqual({ kind: "goto", page: "edit", phase: "fb-refused-start" });
+  });
+  it("without mode: delete it is Not For Sale only (as before); a captcha mid-delete still stops", () => {
+    load("header-in", "edit-delete");
+    expect(step("delist", U.edit, { externalId: ID })).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    expect(clicked).toEqual(["Update"]);
+    load("header-in", "captcha");
+    expect(step("delist", U.edit, D, "del_confirm")).toMatchObject({ kind: "stop", code: "captcha" });
+  });
+});
+
 describe("updateQuantity / updateListing / createListing", () => {
   it("quantity: sets the field and saves; quantity 0 means Not For Sale", () => {
     load("header-in", "edit-select");
@@ -139,7 +188,7 @@ describe("getSales / getListings", () => {
     load("header-in");
     expect(step("getListings", U.home)).toEqual({ kind: "goto", page: "closet", phase: "list", user: "davidsells" });
     load("header-in", "closet");
-    expect(step("getListings", U.closet, {}, "list")).toMatchObject({ kind: "done", result: { note: expect.stringMatching(/^2 listings/) } });
+    expect(step("getListings", U.closet, {}, "list")).toEqual({ kind: "done", listingIds: ["a1b2c3d4e5f6a1b2c3d4e5f6", "b1b2c3d4e5f6a1b2c3d4e5f6"], result: { note: expect.stringMatching(/^2 live listings/) } });
   });
   it("other marketplaces answer not_supported", () => {
     expect(runStep(document, { action: "delist", marketplace: "depop", payload: {}, phase: "start", url: "https://www.depop.com/" })).toMatchObject({ kind: "stop", code: "not_supported" });

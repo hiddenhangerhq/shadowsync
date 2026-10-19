@@ -7,11 +7,12 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { CookieJar, DataStore, DeviceGateway, Services, StorageService, AuthService } from "./interfaces";
 import {
   CREDIT_COSTS, DeviceAuthError, InsufficientCreditsError, ITEM_STATUSES, JOB_STATUSES, SchemaMissingError, SOURCE_PRIORITY,
-  type DeviceErrorCode, type Marketplace,
+  type DeviceErrorCode, type Marketplace, RelistBlockedError, type SoldAction, type Item,
   type AuthUser, type ExtensionDevice, type ItemStatus, type Job, type JobEvent, type MarketplaceLoginState,
 } from "./types";
 import * as sm from "../jobs/state-machine";
 import { makeNeedsAction } from "../jobs/store-helpers";
+import { relistBlocked } from "../jobs/sold";
 
 type Row = Record<string, unknown>;
 const camel = (s: string) => s.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -260,8 +261,14 @@ export function createSupabaseServices(jar: CookieJar): Services {
       },
       async enqueue(input) {
         const userId = await uid();
+        if (input.itemId) {
+          // Relist guard (also enforced by a trigger in 0006).
+          const it = must(await sb.from("items").select("status").eq("id", input.itemId).maybeSingle()) as Row | null;
+          if (it && relistBlocked(input.jobType, input.payload, it.status as Item["status"])) throw new RelistBlockedError(input.itemId);
+        }
         const j = sm.buildNewJob(input, { id: randomUUID(), userId }, new Date());
         const ins = await sb.from("jobs").insert(toRow(j)).select().single();
+        if (ins.error && /relist_blocked/.test(ins.error.message) && input.itemId) throw new RelistBlockedError(input.itemId);
         if (ins.error) {
           if (ins.error.code === "23505" && input.idempotencyKey) {
             // The partial unique index (one OPEN job per user + key) refused it: return the job that is already there.
@@ -345,6 +352,18 @@ export function createSupabaseServices(jar: CookieJar): Services {
         const r = await sb.rpc("ext_pair_start", { p_code: code });
         if (r.error) raise6(r.error);
         return { expiresAt: new Date(r.data as string).toISOString() };
+      },
+    },
+    marketplaceSettings: {
+      async list() {
+        await needSession();
+        const rows = must6(await sb.from("marketplace_settings").select("*")) as Row[];
+        return rows.map((r) => ({ marketplace: r.marketplace as Marketplace, soldAction: r.sold_action as SoldAction, updatedAt: new Date(r.updated_at as string).toISOString() }));
+      },
+      async setSoldAction(marketplace, soldAction) {
+        const userId = await uid();
+        const r = must6(await sb.from("marketplace_settings").upsert({ user_id: userId, marketplace, sold_action: soldAction, updated_at: new Date().toISOString() }, { onConflict: "user_id,marketplace" }).select().single()) as Row;
+        return { marketplace, soldAction: r.sold_action as SoldAction, updatedAt: new Date(r.updated_at as string).toISOString() };
       },
     },
     alerts: {
@@ -478,8 +497,10 @@ function createDeviceGateway(): DeviceGateway {
             listing: l ? { externalId: (l.external_id as string | null) ?? null, url: (l.url as string | null) ?? null } : null,
             item: it ? {
               title: it.title as string, description: (it.description as string | null) ?? null, brand: (it.brand as string | null) ?? null, size: (it.size as string | null) ?? null,
-              askingPrice: it.asking_price === null || it.asking_price === undefined ? null : Number(it.asking_price),
+              askingPrice: it.asking_price === null || it.asking_price === undefined ? null : Number(it.asking_price), status: it.status as Item["status"],
             } : null,
+            soldAction: x.sold_action === "not_for_sale" ? "not_for_sale" : "delete",
+            saleConfirmed: x.sale_confirmed === true,
           };
         }),
       };
@@ -494,6 +515,10 @@ function createDeviceGateway(): DeviceGateway {
         ok: !!r.ok, stored: Number(r.stored), duplicates: Number(r.duplicates), jobsCreated: Number(r.jobs_created), unmatched: Number(r.unmatched),
         cancelled: Number(r.cancelled), cursorAdvanced: !!r.cursor_advanced, ...(r.error ? { error: String(r.error) } : {}),
       };
+    },
+    async listingsReport(token, report) {
+      const r = await rpc<Row>("ext_listings_report", { p_token: token, p_marketplace: report.marketplace, p_external_ids: report.externalIds });
+      return { seen: Number(r.seen), flagged: Number(r.flagged) };
     },
     jobStart: async (token, id) => job(await rpc<Row>("ext_job_start", { p_token: token, p_job: id })),
     jobProgress: async (token, id, message) => { await rpc("ext_job_progress", { p_token: token, p_job: id, p_message: message }); },

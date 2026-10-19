@@ -110,4 +110,6 @@ Output: the folder `extension/dist` and the zip `/workspace/shadowsync-extension
 7. In the popup, press **Connect** next to Poshmark and allow the permission the browser asks for (it covers poshmark.com only). Make sure you are signed in to Poshmark in this same browser.
 8. To update later: replace the folder's contents with the new zip, then press the circular **Reload** arrow on the ShadowSync card in the extensions page.
 
+When an item sells (a confirmed, matched sale), the extension **deletes** its other listings on those marketplaces (Settings > Extension can switch a marketplace to "Not For Sale" instead). If a delete is blocked, it sets Not For Sale and the item shows under **Sold but still active**. Nothing is ever deleted inside Shadow Sync, and a Sold item can't be listed again until you undo the sale.
+
 To stop everything at once: **Pause all** in the popup, or Pause in Settings > Extension. To remove it: Remove it in Settings > Extension, then click **Remove** on the extensions page.

@@ -265,6 +265,67 @@ describe("migration 0006", () => {
     expect(await fails("select ext_scan_report($1, 'ebay', '[]'::jsonb, null)", [token])).toMatch(/ext:bad_request/);
   });
 
+  it("sold items: delete only for a confirmed sale (setting per marketplace), delete/fallback keep everything, relist guard trigger, sold-seen-live flags", async () => {
+    const { token } = await pair(A);
+    const s = await seed(A, "P4");
+    await as(A);
+    await db.query("update items set status = 'sold' where id = $1", [s.item]);
+    const sale = await one<{ id: string }>("insert into sales (item_id, marketplace, order_id, sold_at, price) values ($1, 'ebay', 'E-1', '2026-10-18', 30) returning id", [s.item]);
+    const job = async (saleId: string) => {
+      await as(A);
+      return (await one<{ id: string }>(`insert into jobs (marketplace, job_type, executor, item_id, listing_id, payload, next_run_at)
+        values ('poshmark', 'mark_sold', 'extension', $1, $2, $3::jsonb, now() - interval '1 minute') returning id`, [s.item, s.posh, JSON.stringify({ saleId })])).id;
+    };
+    const run = async (id: string, res: unknown) => { await anon(); await db.query("select ext_job_start($1, $2)", [token, id]); return result(token, id, true, null, null, res); };
+    const pollOne = async () => (await poll(token)).jobs[0] as unknown as { job: { id: string }; sold_action: string; sale_confirmed: boolean; item: { status: string } };
+
+    const j1 = await job(sale.id);
+    let c = await pollOne();
+    expect(c).toMatchObject({ job: { id: j1 }, sold_action: "delete", sale_confirmed: true, item: { status: "sold" } });
+    expect((await run(j1, { deleted: true })).status).toBe("succeeded");
+    await as(A);
+    // Deleted on the marketplace, nothing deleted here: item, listing row (old id) and history all remain.
+    expect(await one("select status, external_id from listings where id = $1", [s.posh])).toEqual({ status: "sold", external_id: "p-P4" });
+    expect(await one("select title, sku from items where id = $1", [s.item])).toEqual({ title: "Polo", sku: "P4" });
+    expect((await rows<{ event: string }>("select event from item_sync_log where listing_id = $1", [s.posh])).map((r) => r.event)).toEqual(["deleted"]);
+
+    await db.query("update listings set status = 'active' where id = $1", [s.posh]);
+    const j2 = await job("11111111-1111-4111-8111-111111111111"); // a saleId that is not a stored sale of this item: never delete
+    c = await pollOne();
+    expect(c).toMatchObject({ job: { id: j2 }, sale_confirmed: false });
+    await run(j2, { fallback: "Poshmark: this listing has an active offer" });
+    await as(A);
+    expect(await one("select event, ref from item_sync_log where event = 'delete_fallback'")).toEqual({ event: "delete_fallback", ref: `delete_fallback:${s.posh}` });
+
+    await db.query("insert into marketplace_settings (marketplace, sold_action) values ('poshmark', 'not_for_sale')");
+    await db.query("update listings set status = 'active' where id = $1", [s.posh]);
+    const j3 = await job(sale.id);
+    expect(await pollOne()).toMatchObject({ job: { id: j3 }, sold_action: "not_for_sale", sale_confirmed: true });
+    await run(j3, {});
+
+    // Relist guard: create / edit / quantity > 0 refused for a Sold item; quantity 0 allowed; undoing the sale clears it.
+    await as(A);
+    const ins = (type: string, payload: unknown) => fails("insert into jobs (marketplace, job_type, executor, item_id, payload) values ('depop', $1, 'extension', $2, $3::jsonb)", [type, s.item, JSON.stringify(payload)]);
+    expect(await ins("create_listing", {})).toMatch(/relist_blocked/);
+    expect(await ins("update_listing", { price: 10 })).toMatch(/relist_blocked/);
+    expect(await ins("update_listing", { quantity: 2 })).toMatch(/relist_blocked/);
+    expect(await ins("update_listing", { quantity: 0 })).toBeNull();
+    expect(await ins("delist", {})).toBeNull();
+    await db.query("update items set status = 'listed' where id = $1", [s.item]);
+    expect(await ins("create_listing", {})).toBeNull();
+    await db.query("update items set status = 'sold' where id = $1", [s.item]);
+
+    // Listing scan: a Sold item seen live is flagged once a day; a NEW order for an already Sold item is flagged too.
+    await anon();
+    expect((await one<{ r: unknown }>("select ext_listings_report($1, 'poshmark', $2::jsonb) r", [token, JSON.stringify(["p-P4", "other"])])).r).toEqual({ seen: 2, flagged: 1 });
+    expect((await one<{ r: unknown }>("select ext_listings_report($1, 'poshmark', $2::jsonb) r", [token, JSON.stringify(["p-P4"])])).r).toEqual({ seen: 1, flagged: 0 });
+    await db.query("select ext_scan_report($1, 'poshmark', $2::jsonb, null)", [token, JSON.stringify([{ orderId: "PO-2", soldAt: "2026-10-19", price: 30, externalListingId: "p-P4" }])]);
+    await as(A);
+    const flags = await rows<{ ref: string }>("select ref from item_sync_log where event = 'sold_seen_live' order by ref");
+    expect(flags.map((f) => f.ref.split(":")[0])).toEqual(["sold_again", "sold_live"]);
+    expect(await fails("select ext_listings_report($1, 'ebay', '[]'::jsonb)", [token])).toMatch(/ext:bad_request/);
+  });
+
   it("alert_prefs: own row only, phone must look like +<digits>, SMS defaults to off", async () => {
     await as(A);
     await db.query("insert into alert_prefs (phone) values ('+15551234567')");

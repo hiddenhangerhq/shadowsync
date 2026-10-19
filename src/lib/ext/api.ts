@@ -8,6 +8,7 @@ import { isUuid } from "../jobs/validate";
 import type { ApiResult } from "../jobs/api";
 import { SchemaError, parse, bool, obj } from "./schema";
 import {
+  isRelistAction, listingsReportSchema,
   buildActionRequest, isExtMarketplace, jobResultSchema, pairCompleteSchema, pollSchema, progressSchema, scanNextSchema, scanReportSchema,
   type ActionRequest, type ExtMarketplace,
 } from "./protocol";
@@ -77,9 +78,14 @@ export const extPoll = (svc: Services, token: string | null, body: unknown, ip: 
     const r = await svc.device.poll(t, { extensionVersion: b.extensionVersion, marketplaces: b.marketplaces, ready: b.ready, limit: b.limit });
     const actions: (ActionRequest & { leaseExpiresAt: string | null; attempt: number })[] = [];
     for (const c of r.jobs) {
-      const a = buildActionRequest(c.job, { listing: c.listing, item: c.item });
+      const a = buildActionRequest(c.job, { listing: c.listing, item: c.item, soldAction: c.soldAction, saleConfirmed: c.saleConfirmed });
       if (!a) {
         await svc.device.jobResult(t, c.job.id, outcomeFromError("not_supported", `${c.job.marketplace} is not handled by the extension`)).catch(() => undefined);
+        continue;
+      }
+      // Relist guard: a job queued before the item sold is never sent out.
+      if (a.itemSold && isRelistAction(a.action, a.payload)) {
+        await svc.device.jobResult(t, c.job.id, outcomeFromError("relist_blocked", "This item is Sold in Shadow Sync; undo the sale to list it again")).catch(() => undefined);
         continue;
       }
       actions.push({ ...a, leaseExpiresAt: c.job.leaseExpiresAt, attempt: c.job.attempts });
@@ -97,6 +103,12 @@ export const extScanReport = (svc: Services, token: string | null, body: unknown
   device(token, ip, async (t) => {
     const b = parse(scanReportSchema, body);
     return ok({ ...(await svc.device.scanReport(t, { marketplace: b.marketplace, sales: b.sales, nextCursor: b.nextCursor })) });
+  });
+
+export const extListingsReport = (svc: Services, token: string | null, body: unknown, ip: string) =>
+  device(token, ip, async (t) => {
+    const b = parse(listingsReportSchema, body);
+    return ok({ ...(await svc.device.listingsReport(t, { marketplace: b.marketplace, externalIds: b.externalIds })) });
   });
 
 type JobVerb = "start" | "progress" | "extend" | "result";

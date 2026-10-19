@@ -18,7 +18,7 @@ export interface Browser {
   hasPermission(m: ExtMarketplace): Promise<boolean>;
 }
 export type RunOutcome =
-  | { ok: true; result: DoneResult; loggedIn?: boolean; sales?: ExtScanSale[]; nextCursor?: string | null }
+  | { ok: true; result: DoneResult; loggedIn?: boolean; sales?: ExtScanSale[]; nextCursor?: string | null; listingIds?: string[] }
   | { ok: false; code: ResultCode; message: string };
 
 export const MAX_STEPS = 8;
@@ -63,7 +63,7 @@ export async function runAction(b: Browser, a: ActionRequest, opts: { onProgress
       const here = await b.url(tab);
       if (!isAllowedUrl(m, here)) return { ok: false, code: "unexpected_page", message: `The tab left ${HOST_TABLE[m].label} (now on another site). Stopped.` };
       const r = await b.step(tab, { action: a.action, marketplace: m, payload: a.payload, phase });
-      if (r.kind === "done") return { ok: true, result: r.result ?? {}, loggedIn: r.loggedIn, sales: r.sales, nextCursor: r.nextCursor };
+      if (r.kind === "done") return { ok: true, result: r.result ?? {}, loggedIn: r.loggedIn, sales: r.sales, nextCursor: r.nextCursor, ...(r.listingIds ? { listingIds: r.listingIds } : {}) };
       if (r.kind === "stop") { keep = !!r.keepTab; return { ok: false, code: r.code, message: r.message }; }
       if (r.kind === "goto") {
         const next = pageUrl(m, r.page, a, r.user);

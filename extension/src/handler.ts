@@ -5,7 +5,7 @@
 // - Jobs: strict envelope + strict per-action schema; URLs must be in the host table; listing ids must match that marketplace's format.
 import { parse, obj, oneOf, str, num, nullable, SchemaError } from "../../src/lib/ext/schema";
 import {
-  ACTION_SCHEMAS, ACTIONS, EXT_MARKETPLACES, HOST_TABLE, isAllowedUrl, type Action, type ActionRequest, type ExtMarketplace,
+  ACTION_SCHEMAS, ACTIONS, EXT_MARKETPLACES, HOST_TABLE, isAllowedUrl, isRelistAction, type Action, type ActionRequest, type ExtMarketplace,
 } from "../../src/lib/ext/protocol";
 
 export interface Sender { id?: string; url?: string; origin?: string; tab?: unknown }
@@ -58,8 +58,9 @@ const envelope = obj({
   jobId: nullable(str({ min: 36, max: 36 })), marketplace: oneOf(EXT_MARKETPLACES), action: oneOf(ACTIONS),
   payload: (v, p) => { if (!v || typeof v !== "object" || Array.isArray(v)) throw new SchemaError(p, "must be an object"); return v as Record<string, unknown>; },
   leaseExpiresAt: nullable(str({ max: 40 })), attempt: num({ min: 0, max: 50, int: true }),
-}, ["leaseExpiresAt", "attempt"]);
-export type JobCheck = { ok: true; value: ActionRequest } | { ok: false; code: "invalid_payload" | "url_not_allowed"; message: string };
+  itemSold: (v, p) => { if (typeof v !== "boolean") throw new SchemaError(p, "must be true or false"); return v; },
+}, ["leaseExpiresAt", "attempt", "itemSold"]);
+export type JobCheck = { ok: true; value: ActionRequest } | { ok: false; code: "invalid_payload" | "url_not_allowed" | "relist_blocked"; message: string };
 
 export function validateAction(raw: unknown): JobCheck {
   let e;
@@ -72,5 +73,9 @@ export function validateAction(raw: unknown): JobCheck {
   if (typeof payload.externalId === "string" && !HOST_TABLE[m].listingId.test(payload.externalId)) {
     return { ok: false, code: "invalid_payload", message: `"${payload.externalId}" is not a ${HOST_TABLE[m].label} listing id` };
   }
-  return { ok: true, value: { jobId: e.jobId, marketplace: m, action: e.action as Action, payload } };
+  // Relist guard (the server refuses these too): never list, edit or restock an item that is Sold in Shadow Sync.
+  if (e.itemSold === true && isRelistAction(e.action as Action, payload)) {
+    return { ok: false, code: "relist_blocked", message: "This item is Sold in Shadow Sync; undo the sale to list it again" };
+  }
+  return { ok: true, value: { jobId: e.jobId, marketplace: m, action: e.action as Action, payload, ...(e.itemSold ? { itemSold: true } : {}) } };
 }
