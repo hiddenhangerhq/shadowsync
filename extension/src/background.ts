@@ -6,9 +6,14 @@ import { chromeBrowser } from "./chrome-browser";
 import { chromeStore } from "./chrome-store";
 import { pairingPageUrl, parseExternal, parseInternal, type HandlerConfig } from "./handler";
 import * as w from "./worker";
+import { requestTransport } from "./transport/request";
+import { POSHMARK_REQUEST_SPEC } from "./transport/poshmark-request";
 
 let token: string | null = null;
 const deps: w.Deps = {
+  // Poshmark over requests: wired, but its spec stays disabled until the endpoints are verified (then no tab opens for those actions).
+  // fetch with credentials "include" sends your poshmark.com session (host permission); we never read cookies.
+  transports: { poshmark: requestTransport(POSHMARK_REQUEST_SPEC, (url, init) => fetch(url, init)) },
   api: makeApi(API_ORIGIN, () => token), browser: chromeBrowser, now: () => Date.now(), rand: () => Math.random(), version: EXT_VERSION,
   store: { load: async () => { const s = await chromeStore.load(); token = s.token; return s; }, save: async (s) => { token = s.token; await chromeStore.save(s); } },
 };

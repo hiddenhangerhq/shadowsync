@@ -1,11 +1,13 @@
 // The extension's brain, with the browser, storage, clock and API injected so it is unit-tested with fakes.
-// One job at a time per marketplace, random 20-90 s gaps, daily caps, a pause after an error burst, an automatic pause after
+// One job at a time per marketplace, random 2-10 s gaps (Careful: 20-90 s), daily caps, a pause after an error burst, an automatic pause after
 // 2 security checks in a row, and the kill switch (this browser, or one marketplace) are all enforced here before any tab opens.
 import { HOST_TABLE, EXT_MARKETPLACES, type ExtMarketplace, type ResultCode } from "../../src/lib/ext/protocol";
 import { validateAction } from "./handler";
 import { actionLabel } from "../../src/lib/jobs/labels";
 import { begin, canRun, clearErrorBursts, emptyPacing, finish, isReady, readiness, refitSpeeds, setDevicePaused, setMarketplacePaused, setSpeed, type PacingState, type Speed } from "./pacing";
 import { runAction, type Browser, type RunOutcome } from "./runner";
+import { SHAPE_CHANGED_MESSAGE, type Transport } from "./transport/types";
+import type { ActionRequest } from "../../src/lib/ext/protocol";
 import { ApiError, type Api } from "./api";
 
 export interface LogLine { at: number; text: string }
@@ -25,7 +27,21 @@ export const emptyState = (): ExtState => ({
   token: null, deviceId: null, deviceLabel: null, pacing: emptyPacing(), logins: {}, server: null, lastPollAt: null, lastError: null, log: [],
 });
 export interface Store { load(): Promise<ExtState>; save(s: ExtState): Promise<void> }
-export interface Deps { api: Api; browser: Browser; store: Store; now: () => number; rand: () => number; version: string }
+export interface Deps {
+  api: Api; browser: Browser; store: Store; now: () => number; rand: () => number; version: string;
+  /** Request transports per marketplace (background calls with your session). Used when they support the action; else the tab. */
+  transports?: Partial<Record<ExtMarketplace, Transport>>;
+}
+/** Run one action on the best transport: the request one when it has a plan for it, else the tab (DOM) one. */
+export function execute(d: Deps, a: ActionRequest, opts: { onProgress?: (m: string) => void } = {}): Promise<RunOutcome> {
+  const t = d.transports?.[a.marketplace];
+  return t && t.supports(a) ? t.run(a, opts) : runAction(d.browser, a, opts);
+}
+/** The site answered in a way we don't recognise: pause that marketplace here (Resume in the popup once we ship the fix). */
+function onShapeChanged(st: ExtState, m: ExtMarketplace, now: number) {
+  st.pacing = setMarketplacePaused(st.pacing, m, true, now, SHAPE_CHANGED_MESSAGE(HOST_TABLE[m].label));
+  addLog(st, now, `${HOST_TABLE[m].label}: ${SHAPE_CHANGED_MESSAGE(HOST_TABLE[m].label)}`);
+}
 
 const LOG_MAX = 40;
 const addLog = (s: ExtState, now: number, text: string) => { s.log = [{ at: now, text: text.slice(0, 200) }, ...s.log].slice(0, LOG_MAX); };
@@ -51,13 +67,14 @@ async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getS
   const check = validateAction({ jobId: null, marketplace: m, action, payload });
   if (!check.ok) return { ok: false, code: "deferred", message: check.message };
   await update(d, (s) => { s.pacing = begin(s.pacing, m, action, d.now()); });
-  const out = await runAction(d.browser, check.value); // never throws; a crashed worker leaves "busy", which goes stale after 15 min
+  const out = await execute(d, check.value); // never throws; a crashed worker leaves "busy", which goes stale after 15 min
   await update(d, (s) => {
     // A sign-in check that can't tell or doesn't load is "unknown", never an error (only a security check counts).
     const code = !out.ok && action === "checkLogin" && !["captcha", "challenge", "verification_required"].includes(out.code) ? "deferred" : out.ok ? null : out.code;
     s.pacing = finish(s.pacing, m, code === null ? { ok: true } : { ok: false, code }, d.now(), d.rand());
     if (out.ok && out.loggedIn !== undefined) s.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
     if (!out.ok && out.code === "signed_out") s.logins[m] = { loggedIn: false, at: d.now() };
+    if (!out.ok && out.code === "shape_changed") onShapeChanged(s, m, d.now());
     if (!out.ok) addLog(s, d.now(), `${HOST_TABLE[m].label}: Failed: ${actionLabel(action, payload)}: ${out.message}`);
   });
   return out;
@@ -136,11 +153,12 @@ export async function runJob(d: Deps, raw: { jobId: string } & Record<string, un
   const lease = setInterval(() => { d.api.extend(raw.jobId).catch(() => undefined); }, 60_000);
   let out: RunOutcome;
   try {
-    out = await runAction(d.browser, a, { onProgress: (msg) => { d.api.progress(raw.jobId, msg).catch(() => undefined); } });
+    out = await execute(d, a, { onProgress: (msg) => { d.api.progress(raw.jobId, msg).catch(() => undefined); } });
   } finally { clearInterval(lease); }
   await update(d, (st) => {
     st.pacing = finish(st.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code }, d.now(), d.rand());
     if (!out.ok && out.code === "signed_out") st.logins[m] = { loggedIn: false, at: d.now() };
+    if (!out.ok && out.code === "shape_changed") onShapeChanged(st, m, d.now());
     if (out.ok && out.loggedIn !== undefined) st.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
     const label = actionLabel(a.action, a.payload);
     addLog(st, d.now(), `${HOST_TABLE[m].label}: ${out.ok ? `Succeeded: ${label}${out.result.note ? ` (${out.result.note})` : ""}` : `Failed: ${label}: ${out.message}`}`);

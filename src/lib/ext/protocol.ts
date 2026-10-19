@@ -153,6 +153,8 @@ export const RESULT_CODES = [
   "signed_out", "captcha", "challenge", "verification_required", "unexpected_page", "review_and_submit", "listing_not_found",
   "timeout", "network", "rate_limited", "deferred", "unavailable",
   "not_supported", "invalid_payload", "url_not_allowed", "rejected", "permission_missing", "action_failed", "relist_blocked",
+  // The marketplace's own pages / API answered in a way we don't recognise: the extension pauses that marketplace and the dashboard says so.
+  "shape_changed",
 ] as const;
 export type ResultCode = (typeof RESULT_CODES)[number];
 export const resultSchema = obj(

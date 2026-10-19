@@ -204,6 +204,16 @@ describe("getSales / getListings", () => {
     expect(step("getSales", "https://poshmark.com/somewhere-else", {})).toEqual({ kind: "goto", page: "sales", phase: "again" });
     expect(step("getSales", "https://poshmark.com/somewhere-else", {}, "again")).toMatchObject({ kind: "stop", code: "unexpected_page", message: expect.stringContaining("/somewhere-else") });
   });
+  it("My Sales landing on the Seller Hub (/seller-hub/sales) is the sales page and is parsed", () => {
+    for (const u of ["https://poshmark.com/seller-hub/sales", "https://poshmark.com/seller-hub/sales/", "https://poshmark.com/seller-hub/sales?tab=all", "https://poshmark.com/seller-hub/orders"])
+      expect(pageOf(u), u).toBe("sales");
+    load("header-in", "seller-hub-sales");
+    const r = step("getSales", "https://poshmark.com/seller-hub/sales", {});
+    expect(r).toMatchObject({ kind: "done" });
+    const sales = (r as { sales: { orderId: string; soldAt: string; price: number; externalListingId: string | null }[] }).sales;
+    expect(sales.map((x) => [x.orderId, x.soldAt, x.price])).toEqual([["ord2002hub", "2026-10-16", 40], ["ord2001hub", "2026-10-18", 25]]);
+    expect(sales[1].externalListingId).toBe(ID);
+  });
   it("signed out on the sales page stops", () => {
     load("header-out", "sales");
     expect(step("getSales", U.sales, {})).toMatchObject({ kind: "stop", code: "signed_out" });

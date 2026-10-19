@@ -33,6 +33,8 @@ export function formatAge(ms: number): string {
 const RANK: Record<HealthLevel, number> = { green: 0, yellow: 1, red: 2 };
 const label = (m: Marketplace) => m.charAt(0).toUpperCase() + m.slice(1);
 
+export const SHAPE_CHANGED = "shape_changed";
+const SHAPE_ALERT_MS = 7 * 24 * 3600_000;
 export function computeHealth(i: HealthInput): Health {
   const t = i.now.getTime();
   const age = (iso: string | null) => (iso ? t - new Date(iso).getTime() : Infinity);
@@ -67,6 +69,17 @@ export function computeHealth(i: HealthInput): Health {
       if (!cur || s.checkedAt > cur.checkedAt) latest.set(s.marketplace, s);
     }
     for (const s of latest.values()) if (!s.loggedIn) items.push({ key: `signed_out:${s.marketplace}`, level: "yellow", title: `Signed out of ${label(s.marketplace)} in your browser`, detail: "Its jobs wait until you sign in again" });
+  }
+
+  // ---- a marketplace changed its site / API (the extension's "shape changed" detector): sync for it is paused until we ship a fix.
+  for (const m of new Set(i.jobs.filter((j) => j.lastErrorCode === SHAPE_CHANGED).map((j) => j.marketplace))) {
+    const hit = i.jobs.filter((j) => j.marketplace === m && j.lastErrorCode === SHAPE_CHANGED && age(j.finishedAt ?? j.createdAt) < SHAPE_ALERT_MS)
+      .sort((a, b) => (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt))[0];
+    if (!hit) continue;
+    const since = hit.finishedAt ?? hit.createdAt;
+    if (i.jobs.some((j) => j.marketplace === m && j.executor === "extension" && j.status === "succeeded" && (j.finishedAt ?? "") > since)) continue; // working again
+    items.push({ key: `shape:${m}`, level: "red", title: `${label(m)} changed something, sync paused, update coming`,
+      detail: "No half-done changes were saved. Jobs wait; after the update, press Resume for it in the extension popup." });
   }
 
   // ---- server worker

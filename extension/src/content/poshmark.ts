@@ -18,7 +18,7 @@ export function pageOf(url: string): Page {
   if (/^\/create-listing(\/|$)/.test(p)) return "create";
   // My Sales: /order/sales (and any redirect variant: /order/sales?..., /my-sales, /account/sales, /sales). The closet's sold view
   // (/closet/<you>?availability=sold_out) counts as the sales page too, but carries no order links, so it simply reports none.
-  if (/^\/(order\/sales|sales|my-?sales|account\/sales|order\/my-?sales)(\/|$)/i.test(p)) return "sales";
+  if (/^\/(order\/sales|sales|my-?sales|account\/sales|order\/my-?sales|seller-hub\/sales|seller-hub\/orders?)(\/|$)/i.test(p)) return "sales";
   if (/^\/closet\//.test(p) && /^sold/i.test(qs.get("availability") ?? "")) return "sales";
   if (/^\/closet\//.test(p)) return "closet";
   if (p === "/" || /^\/feed(\/|$)/.test(p)) return "home";
@@ -346,8 +346,9 @@ function createStep(doc: Document, page: Page, p: Record<string, unknown>): Step
 /** Sales page -> sales newer than the cursor (minus a 1-day overlap; the server drops duplicates). */
 export function parseSales(doc: Document, cursor: string | null, limit: number): { sales: ExtScanSale[]; nextCursor: string | null } {
   const seen = new Map<string, ExtScanSale>();
-  for (const a of Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[href*="/order/sales/"]'))) {
-    const id = /\/order\/sales\/([A-Za-z0-9_-]{4,40})/.exec(a.getAttribute("href") ?? "")?.[1];
+  // Order links: /order/sales/<id> (My Sales) or the Seller Hub's /seller-hub/sales/<id> (also /seller-hub/order(s)/<id>).
+  for (const a of Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[href*="/order/sales/"], a[href*="/seller-hub/sales/"], a[href*="/seller-hub/order"]'))) {
+    const id = /\/(?:order\/sales|seller-hub\/sales|seller-hub\/orders?)\/([A-Za-z0-9_-]{4,40})/.exec(a.getAttribute("href") ?? "")?.[1];
     if (!id || seen.has(id)) continue;
     let row: Element = a;
     for (let i = 0; i < 6 && row.parentElement && !(money(textOf(row)) !== null && isoDay(textOf(row))); i++) row = row.parentElement;

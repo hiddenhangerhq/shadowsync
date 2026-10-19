@@ -22,6 +22,8 @@ export type RunOutcome =
   | { ok: false; code: ResultCode; message: string };
 
 export const MAX_STEPS = 8;
+/** Chrome's errors when our tab was closed (by you or the browser) or swapped for another one mid-job. */
+export const isTabGone = (e: unknown) => /no tab with id|tab was closed|tabs cannot be (edited|queried)|invalid tab id|frame with id \d+ was removed|the tab was replaced/i.test(String((e as Error)?.message ?? e));
 const LOAD_TIMEOUT_MS = 45_000;
 
 /** The page an action starts on. */
@@ -54,12 +56,13 @@ export async function runAction(b: Browser, a: ActionRequest, opts: { onProgress
   const start = pageUrl(m, firstPage(a), a);
   if (!start || !isAllowedUrl(m, start)) return { ok: false, code: "url_not_allowed", message: "No allowed page for this action" };
   let tab: number | null = null;
-  let keep = false;
+  let keep = false, reopened = false;
   try {
     tab = await b.open(start);
     let phase = "start";
     for (let i = 0; i < MAX_STEPS; i++) {
-      try { await b.waitLoaded(tab, LOAD_TIMEOUT_MS); } catch { return { ok: false, code: "timeout", message: `${HOST_TABLE[m].label} took too long to load` }; }
+     try {
+      try { await b.waitLoaded(tab, LOAD_TIMEOUT_MS); } catch (e) { if (isTabGone(e)) throw e; return { ok: false, code: "timeout", message: `${HOST_TABLE[m].label} took too long to load` }; }
       const here = await b.url(tab);
       if (!isAllowedUrl(m, here)) return { ok: false, code: "unexpected_page", message: `The tab left ${HOST_TABLE[m].label} (now on another site). Stopped.` };
       const r = await b.step(tab, { action: a.action, marketplace: m, payload: a.payload, phase });
@@ -76,9 +79,20 @@ export async function runAction(b: Browser, a: ActionRequest, opts: { onProgress
       opts.onProgress?.(`Waiting (${r.phase})`);
       await b.sleep(Math.min(Math.max(r.ms, 200), 10_000));
       phase = r.phase;
+     } catch (e) {
+      // The tab was closed or replaced under us ("No tab with id: ..."). Start over once in a fresh tab: every action re-reads the page
+      // first, so a change that already went through shows as done. A second loss is a retry later, not a failure.
+      if (!isTabGone(e)) throw e;
+      if (reopened) { tab = null; return { ok: false, code: "unavailable", message: `The ${HOST_TABLE[m].label} tab was closed or replaced twice; will retry` }; }
+      reopened = true;
+      opts.onProgress?.("Tab was closed; reopening");
+      tab = await b.open(start);
+      phase = "start";
+     }
     }
     return { ok: false, code: "unexpected_page", message: `Gave up after ${MAX_STEPS} steps without a clear result` };
   } catch (e) {
+    if (isTabGone(e)) { tab = null; return { ok: false, code: "unavailable", message: `The ${HOST_TABLE[m].label} tab was closed or replaced; will retry` }; }
     return { ok: false, code: "action_failed", message: (e instanceof Error ? e.message : String(e)).slice(0, 300) };
   } finally {
     if (tab !== null && !keep) await b.close(tab).catch(() => undefined);

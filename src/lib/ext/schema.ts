@@ -60,4 +60,13 @@ export function obj<S extends Shape, O extends keyof S = never>(shape: S, option
     return out as Out<S, O>;
   };
 }
+/** Like obj, but other fields are ignored (for reading a third-party answer: we check only what we use, and keep only that). */
+export function pick<S extends Shape, O extends keyof S = never>(shape: S, optional: readonly O[] = []): Check<Out<S, O>> {
+  const strict = obj(shape, optional);
+  return (v, p) => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return fail(p, "must be an object");
+    const src = v as Record<string, unknown>;
+    return strict(Object.fromEntries(Object.keys(shape).filter((k) => k in src).map((k) => [k, src[k]])), p);
+  };
+}
 export const parse = <T>(c: Check<T>, v: unknown): T => c(v, "");

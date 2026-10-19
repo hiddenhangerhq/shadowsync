@@ -29,6 +29,21 @@ function fakeBrowser(steps: (url: string, phase: string) => StepResult, o: { per
 const req = (o: Partial<ActionRequest> = {}): ActionRequest => ({ jobId: null, marketplace: "poshmark", action: "delist", payload: { externalId: ID }, ...o });
 
 describe("runner", () => {
+  it("tab closed or replaced mid-job ('No tab with id: 285047528'): reopens once and finishes; twice is a retry later, not a failure", async () => {
+    let gone = 1;
+    const { b, log } = fakeBrowser((u, phase) => (phase === "start" ? { kind: "wait", phase: "saved", ms: 1 } : { kind: "done", result: { note: "ok" } }));
+    const step = b.step;
+    b.step = async (t, i) => { if (i.phase === "saved" && gone-- > 0) throw new Error("No tab with id: 285047528."); return step(t, i); };
+    expect(await runAction(b, req())).toMatchObject({ ok: true });
+    expect(log.opened).toHaveLength(2);
+    gone = 99;
+    const r = await runAction(b, req());
+    expect(r).toMatchObject({ ok: false, code: "unavailable", message: expect.stringMatching(/closed or replaced/) });
+    // a vanished tab while loading is the same thing, not a "took too long" timeout
+    const f2 = fakeBrowser(() => ({ kind: "done" }));
+    f2.b.waitLoaded = async () => { throw new Error("No tab with id: 1."); };
+    expect(await runAction(f2.b, req())).toMatchObject({ ok: false, code: "unavailable" });
+  });
   it("opens only table URLs, follows goto by page name, closes the tab", async () => {
     const { b, log } = fakeBrowser((u, phase) => (phase === "start" && u.includes("/listing/") ? { kind: "goto", page: "edit", phase: "start" } : u.includes("/edit-listing/") && phase === "start" ? { kind: "wait", phase: "saved", ms: 5000 } : { kind: "done", result: { note: "ok" } }));
     expect(await runAction(b, req())).toMatchObject({ ok: true, result: { note: "ok" } });
@@ -216,6 +231,26 @@ describe("worker end to end on the mock API", () => {
       h.advance(ms + 250);
     }
     expect(ran).toBe(3); // three delists in about half a minute
+  });
+  it("request transport first when it supports the action; 'shape changed' pauses that marketplace and fails the job (no tab opened)", async () => {
+    const { svc, enqueue } = await setup();
+    const h = harness(svc, (u) => (u.endsWith("/feed") ? { kind: "done", loggedIn: true } : { kind: "done", result: { note: "tab" } }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    const ran: string[] = [];
+    h.deps.transports = { poshmark: { name: "request", supports: (a) => a.action === "delist", run: async (a) => { ran.push(a.action); return { ok: false, code: "shape_changed", message: "Poshmark changed something, sync paused, update coming (nothing was changed: GET answered 410)" }; } } };
+    const { job } = await enqueue();
+    h.advance(1000);
+    const opened = h.fb.log.opened.length;
+    await w.poll(h.deps);
+    expect(ran).toEqual(["delist"]);
+    expect(h.fb.log.opened.length).toBe(opened); // no tab
+    expect(h.state.pacing.mp.poshmark).toMatchObject({ paused: true, pausedReason: "Poshmark changed something, sync paused, update coming" });
+    const j = await svc.store.jobs.get(job.id);
+    expect(j).toMatchObject({ status: "failed", lastErrorCode: "shape_changed" });
+    // paused: the next poll asks for nothing on Poshmark
+    await enqueue();
+    h.advance(60_000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 0, notes: [expect.stringMatching(/changed something/)] });
   });
   it("Check now says why nothing ran (waiting between jobs, paused here or on the website)", async () => {
     const { svc, enqueue } = await setup();
