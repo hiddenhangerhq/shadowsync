@@ -3,6 +3,7 @@
 //   status, or run the read-only checkLogin. Anything that changes a listing comes ONLY from the server job queue with the device token.
 // - The popup: only our own extension pages, never a content script or a tab.
 // - Jobs: strict envelope + strict per-action schema; URLs must be in the host table; listing ids must match that marketplace's format.
+import { BRAND } from "./brand";
 import { parse, obj, oneOf, str, num, nullable, SchemaError } from "../../src/lib/ext/schema";
 import {
   ACTION_SCHEMAS, ACTIONS, EXT_MARKETPLACES, HOST_TABLE, isAllowedUrl, isRelistAction, type Action, type ActionRequest, type ExtMarketplace,
@@ -75,7 +76,7 @@ export function validateAction(raw: unknown): JobCheck {
   }
   // Relist guard (the server refuses these too): never list, edit or restock an item that is Sold in Shadow Sync.
   if (e.itemSold === true && isRelistAction(e.action as Action, payload)) {
-    return { ok: false, code: "relist_blocked", message: "This item is Sold in Shadow Sync; undo the sale to list it again" };
+    return { ok: false, code: "relist_blocked", message: `This item is Sold in ${BRAND}; undo the sale to list it again` };
   }
   return { ok: true, value: { jobId: e.jobId, marketplace: m, action: e.action as Action, payload, ...(e.itemSold ? { itemSold: true } : {}) } };
 }

@@ -1,4 +1,5 @@
 // Talks only to our own API origin, with the device token. Nothing else leaves the extension.
+import { BRAND } from "./brand";
 import type { ExtPollResult, ExtScanNext, ExtScanResult, ExtScanSale } from "../../src/lib/data/types";
 import type { ResultCode } from "../../src/lib/ext/protocol";
 import type { DoneResult } from "./steps";
@@ -17,7 +18,7 @@ export function makeApi(origin: string, token: () => string | null, f: Fetch = (
     if (auth) { if (!t) throw new ApiError(401, "invalid_token", "Not paired"); headers.authorization = `Bearer ${t}`; }
     let res: Response;
     try { res = await f(`${origin}/api/v1${path}`, { method: "POST", headers, body: JSON.stringify(body ?? {}), credentials: "omit", cache: "no-store" }); }
-    catch (e) { throw new ApiError(0, "network", `Can't reach ShadowSync (${(e as Error).message})`); }
+    catch (e) { throw new ApiError(0, "network", `Can't reach ${BRAND} (${(e as Error).message})`); }
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) throw new ApiError(res.status, typeof json.code === "string" ? json.code : null, typeof json.error === "string" ? json.error : `HTTP ${res.status}`);
     return json as T;

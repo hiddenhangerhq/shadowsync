@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>ShadowSync</title><link rel="stylesheet" href="popup.css"></head>
+<head><meta charset="utf-8"><title>{{EXT_NAME}}</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-  <header><strong>ShadowSync</strong> <span id="version" class="muted"></span></header>
+  <header><img src="icon-48.png" width="22" height="22" alt=""><strong>{{BRAND}}</strong> <span id="version" class="muted"></span></header>
   <section id="pair" hidden>
-    <p>Pair this browser: on the ShadowSync website open <b>Settings &gt; Extension</b>, press <b>Pair this browser</b>, then type the code here.</p>
+    <p>Pair this browser: on the {{BRAND}} website open <b>Settings &gt; Extension</b>, press <b>Pair this browser</b>, then type the code here.</p>
     <p><button id="openPair" type="button">Open the pairing page</button></p>
     <form id="pairForm"><input id="code" autocomplete="off" maxlength="9" placeholder="XXXX-XXXX" aria-label="Pairing code"><button>Pair</button></form>
   </section>

@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { parseExternal, parseInternal, validateAction } from "../extension/src/handler";
 import * as P from "../extension/src/pacing";
-import { buildManifest, apiOriginFrom } from "../extension/src/manifest";
+import { buildManifest, apiOriginFrom, BRAND, ICON_SIZES } from "../extension/src/manifest";
+import { existsSync } from "node:fs";
 import { HOST_TABLE, isAllowedUrl, marketplaceOfUrl } from "../src/lib/ext/protocol";
 import { formatPairingCode, isDeviceToken, newDeviceToken, newPairingCode, normalizePairingCode, sha256Hex } from "../src/lib/ext/tokens";
 import { CHALLENGE_CODES, NEEDS_USER_CODES, TRANSIENT_CODES } from "../src/lib/jobs/state-machine";
@@ -138,6 +139,22 @@ describe("manifest", () => {
     for (const bad of ["cookies", "webRequest", "declarativeNetRequest", "<all_urls>", "\"tabs\"", "unsafe-eval", "debugger", "history", "management", "nativeMessaging"]) expect(all).not.toContain(bad);
     expect(m.content_security_policy.extension_pages).toMatch(/^script-src 'self'/);
     expect(m.optional_host_permissions.every((p) => p.startsWith("https://") && !p.includes("*."))).toBe(true);
+  });
+  it("extensions-page card: name, one-line pitch, icons, version 1.0.0", () => {
+    expect(m.name).toBe("Shadow Sync Crosslist Extension");
+    expect(m.description).toBe("Connect and crosslist to Poshmark, Depop, Grailed and more with Shadow Sync.");
+    expect(m.description.length).toBeLessThanOrEqual(132);
+    expect(m.name.startsWith(BRAND)).toBe(true);
+    const icons = { "16": "icon-16.png", "32": "icon-32.png", "48": "icon-48.png", "128": "icon-128.png" };
+    expect(m.icons).toEqual(icons);
+    expect(m.action.default_icon).toEqual(icons);
+    for (const n of ICON_SIZES) {
+      const png = readFileSync(`extension/static/icon-${n}.png`);
+      expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([n, n]); // IHDR width/height
+    }
+    expect(JSON.parse(readFileSync("extension/version.json", "utf8")).version).toBe("1.0.0");
+    expect(readFileSync("extension/static/popup.html", "utf8")).toContain('src="icon-48.png"');
+    expect(existsSync("extension/icon.svg")).toBe(true);
   });
   it("API origin is validated at build time", () => {
     expect(apiOriginFrom(undefined)).toBe("https://shadowsync-ruby.vercel.app");
