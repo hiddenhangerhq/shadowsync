@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { CookieJar, Services } from "../src/lib/data/interfaces";
 import { createMockServices, MockDb } from "../src/lib/data/mock";
 import { createSupabaseServices } from "../src/lib/data/supabase-impl";
@@ -55,24 +55,47 @@ export function testAccount(idx: 0 | 1) {
   return { email, password };
 }
 
+// Supabase Auth rate-limits password sign-ins per IP, so each test file signs each account in ONCE and reuses the session.
+// (Module state is per test file under vitest isolation.)
+const rawSessions = new Map<number, Promise<{ sb: SupabaseClient; userId: string }>>();
+function rawSignedIn(idx: 0 | 1, fresh = false) {
+  if (fresh) rawSessions.delete(idx);
+  let p = rawSessions.get(idx);
+  if (!p) {
+    p = (async () => {
+      const { email, password } = testAccount(idx);
+      const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { auth: { persistSession: false, autoRefreshToken: false } });
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if (error || !data.user) throw new Error(`test account ${email} cannot sign in: ${error?.message}`);
+      return { sb, userId: data.user.id };
+    })();
+    p.catch(() => rawSessions.delete(idx));
+    rawSessions.set(idx, p);
+  }
+  return p;
+}
+
 const MISSING = new Set(["42P01", "PGRST205"]);
 /** True when the 0005 job-queue tables exist on the real project (probes with a signed-in test account). */
 export async function jobTablesExist(): Promise<boolean> {
-  const { email, password } = testAccount(0);
-  const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { auth: { persistSession: false } });
-  const { error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) return false;
+  let sb: SupabaseClient;
+  try { ({ sb } = await rawSignedIn(0)); } catch { return false; }
   const probes = await Promise.all(["jobs", "job_events", "extension_devices", "extension_marketplace_state", "sales_scan_cursors", "item_sync_log", "worker_state"].map((t) => sb.from(t).select("*").limit(1)));
-  await sb.auth.signOut();
   return probes.every((r) => !r.error);
 }
 
 /** Delete everything the user can delete through RLS so each test starts empty. Credit ledger rows can't be deleted by users (by design). */
 export async function wipeSupabaseUser(idx: 0 | 1) {
-  const { email, password } = testAccount(idx);
-  const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { auth: { persistSession: false } });
-  const { data, error } = await sb.auth.signInWithPassword({ email, password });
-  if (error || !data.user) throw new Error(`test account ${email} cannot sign in: ${error?.message}`);
+  try {
+    await wipeWith(await rawSignedIn(idx));
+  } catch {
+    // The cached session may have been revoked (a test signed out globally): sign in again once.
+    await wipeWith(await rawSignedIn(idx, true));
+  }
+}
+
+async function wipeWith({ sb, userId }: { sb: SupabaseClient; userId: string }) {
+  const data = { user: { id: userId } };
   const bucket = process.env.SUPABASE_PHOTO_BUCKET || "item-photos";
   const leftovers = await sb.storage.from(bucket).list(data.user.id, { limit: 1000 });
   for (const f of leftovers.data ?? []) {
@@ -92,9 +115,9 @@ export async function wipeSupabaseUser(idx: 0 | 1) {
   }
   const p = await sb.from("profiles").update({ theme: "system", display_name: null }).eq("id", data.user.id);
   if (p.error) throw new Error(`wipe profile: ${p.error.message}`);
-  await sb.auth.signOut();
 }
 
+const sessionCookies = new Map<number, { name: string; value: string }[]>();
 const supabase: Backend = {
   name: "supabase",
   canGrant: false,
@@ -105,11 +128,20 @@ const supabase: Backend = {
       client,
       user: async (idx) => {
         await wipeSupabaseUser(idx);
-        const s = client();
-        const { email, password } = testAccount(idx);
-        const r = await s.auth.signIn(email, password);
-        if (!r.user) throw new Error(`signIn ${email}: ${r.error}`);
-        return s;
+        let cookies = sessionCookies.get(idx);
+        if (!cookies) {
+          const jar = memoryJar();
+          const s = createSupabaseServices(jar);
+          const { email, password } = testAccount(idx);
+          const r = await s.auth.signIn(email, password);
+          if (!r.user) throw new Error(`signIn ${email}: ${r.error}`);
+          cookies = jar.getAll();
+          sessionCookies.set(idx, cookies);
+        }
+        // A fresh jar holding a copy of the saved session cookies: independent client, no new sign-in.
+        const jar = memoryJar();
+        for (const c of cookies) jar.set(c.name, c.value);
+        return createSupabaseServices(jar);
       },
     };
   },

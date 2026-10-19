@@ -92,10 +92,14 @@ export function createSupabaseServices(jar: CookieJar): Services {
     if (!u) throw new Error("Not signed in");
     return u.id;
   };
+  // RLS would just return no rows when signed out; fail loudly instead (same as the mock). Local session check, no network call.
+  const needSession = async () => {
+    if (!(await sb.auth.getSession()).data.session) throw new Error("Not signed in");
+  };
   // RLS already restricts every query to auth.uid(); user_id is only set on insert.
   const list = async <T,>(table: string, build?: (q: any) => any): Promise<T[]> => { // eslint-disable-line @typescript-eslint/no-explicit-any
     // RLS would just return no rows when signed out; fail loudly instead (same as the mock). Local session check, no network call.
-    if (!(await sb.auth.getSession()).data.session) throw new Error("Not signed in");
+    await needSession();
     const q = sb.from(table).select("*");
     const rows = must(await (build ? build(q) : q)) as Row[];
     return rows.map((r) => fromRow<T>(r));
@@ -104,10 +108,12 @@ export function createSupabaseServices(jar: CookieJar): Services {
     fromRow<T>(must(await sb.from(table).insert({ ...toRow(v), user_id: await uid() }).select().single()) as Row);
 
   const getJob = async (id: string): Promise<Job | null> => {
+    await needSession();
     const r = must(await sb.from("jobs").select("*").eq("id", id).maybeSingle()) as Row | null;
     return r ? (normTs(fromRow<Row>(r)) as unknown as Job) : null;
   };
   const getDevice = async (id: string): Promise<ExtensionDevice> => {
+    await needSession();
     const r = must(await sb.from("extension_devices").select(DEVICE_COLS).eq("id", id).maybeSingle()) as Row | null;
     if (!r) throw new Error("Device not found");
     return normTs(fromRow<Row>(r)) as unknown as ExtensionDevice;
@@ -262,6 +268,7 @@ export function createSupabaseServices(jar: CookieJar): Services {
       cancel: (id, now = new Date()) => transition(id, (j) => sm.cancel(j, now)),
       async counts() {
         const out = Object.fromEntries(JOB_STATUSES.map((s) => [s, 0])) as Record<(typeof JOB_STATUSES)[number], number>;
+        await needSession();
         const r = await sb.rpc("job_counts");
         if (r.error) raise(r.error);
         for (const row of (r.data ?? []) as { status: Job["status"]; n: number | string }[]) out[row.status] = Number(row.n);
@@ -269,7 +276,7 @@ export function createSupabaseServices(jar: CookieJar): Services {
       },
     },
     devices: {
-      list: async () => (must(await sb.from("extension_devices").select(DEVICE_COLS).order("created_at", { ascending: false })) as Row[]).map((r) => normTs(fromRow<Row>(r)) as unknown as ExtensionDevice),
+      list: async () => (await needSession(), must(await sb.from("extension_devices").select(DEVICE_COLS).order("created_at", { ascending: false })) as Row[]).map((r) => normTs(fromRow<Row>(r)) as unknown as ExtensionDevice),
       async register({ label, tokenHash }) {
         const r = await sb.from("extension_devices").insert({ label, token_hash: tokenHash, user_id: await uid() }).select(DEVICE_COLS).single();
         if (r.error?.code === "23505") throw new Error("Device token already registered");
@@ -306,6 +313,7 @@ export function createSupabaseServices(jar: CookieJar): Services {
     cursors: {
       list: async () => (await list<Row>("sales_scan_cursors")).map((r) => normTs(r) as unknown as import("./types").ScanCursor),
       async get(marketplace, scopeKey = "default") {
+        await needSession();
         const r = must(await sb.from("sales_scan_cursors").select("*").eq("marketplace", marketplace).eq("scope_key", scopeKey).maybeSingle()) as Row | null;
         return r ? (normTs(fromRow<Row>(r)) as unknown as import("./types").ScanCursor) : null;
       },
