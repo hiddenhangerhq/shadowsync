@@ -1,0 +1,43 @@
+{
+ "data": {
+  "id": "fedcba9876543210fedcba98",
+  "creator_id": "0123456789abcdef01234567",
+  "status": "published",
+  "title": "TEST-1 Black jeans",
+  "price_amount": {
+   "val": "55.0",
+   "currency_code": "USD",
+   "currency_symbol": "$"
+  },
+  "price": 55,
+  "original_price_amount": {
+   "val": "0.0",
+   "currency_code": "USD",
+   "currency_symbol": "$"
+  },
+  "original_price": 0,
+  "updated_at": "2026-10-19T02:49:23-07:00",
+  "inventory": {
+   "status": "available",
+   "multi_item": false,
+   "size_quantity_revision": 1,
+   "size_quantities": [
+    {
+     "size_id": "35",
+     "quantity_available": 1,
+     "quantity_sold": 0,
+     "size_obj": {
+      "id": "35",
+      "display": "Waist 35",
+      "display_with_size_set": "Waist 35",
+      "size_system": "us",
+      "display_with_size_system": "US Waist 35",
+      "display_with_system_and_set": "US Waist 35"
+     }
+    }
+   ]
+  }
+ },
+ "meta": {},
+ "trace_id": "<TRACE>"
+}

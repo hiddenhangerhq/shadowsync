@@ -33,9 +33,17 @@ export interface Deps {
   transports?: Partial<Record<ExtMarketplace, Transport>>;
 }
 /** Run one action on the best transport: the request one when it has a plan for it, else the tab (DOM) one. */
-export function execute(d: Deps, a: ActionRequest, opts: { onProgress?: (m: string) => void } = {}): Promise<RunOutcome> {
+const READ_ONLY = new Set<ActionRequest["action"]>(["checkLogin", "getSales", "getListings"]);
+export async function execute(d: Deps, a: ActionRequest, opts: { onProgress?: (m: string) => void } = {}): Promise<RunOutcome> {
   const t = d.transports?.[a.marketplace];
-  return t && t.supports(a) ? t.run(a, opts) : runAction(d.browser, a, opts);
+  if (!t || !t.supports(a)) return runAction(d.browser, a, opts);
+  const out = await t.run(a, opts);
+  // A read (sign-in check, sales scan) that no longer matches what we expect falls back to the tab instead of pausing: nothing was
+  // written, and the tab path still works. Writes never fall back (shape_changed pauses that marketplace).
+  if (!out.ok && out.code === "shape_changed" && READ_ONLY.has(a.action)) return runAction(d.browser, a, opts);
+  // "Signed out" over requests holds every job back, so confirm it in a tab first (in case the browser did not send your session).
+  if (a.action === "checkLogin" && out.ok && out.loggedIn === false) return runAction(d.browser, a, opts);
+  return out;
 }
 /** The site answered in a way we don't recognise: pause that marketplace here (Resume in the popup once we ship the fix). */
 function onShapeChanged(st: ExtState, m: ExtMarketplace, now: number) {

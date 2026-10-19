@@ -1,0 +1,90 @@
+{
+ "data": {
+  "sales_summary": [
+   {
+    "id": "e5bab3eedb2362864b0cfb09",
+    "user_id": "ff96e5e9a635f840e870cd05",
+    "seller_id": "0123456789abcdef01234567",
+    "state": "seller_confirm_initiated",
+    "is_bundle": false,
+    "title": "Sample Track Pants",
+    "total_price_amount": {
+     "val": "20.0",
+     "currency_code": "USD",
+     "currency_symbol": "$"
+    },
+    "inventory_booked_at": "2026-10-16T10:58:26-07:00",
+    "bundle_size": 1,
+    "buyer": {
+     "id": "ff96e5e9a635f840e870cd05",
+     "username": "<REDACTED>"
+    },
+    "seller_earning_amount": {
+     "val": "16.0",
+     "currency_code": "USD",
+     "currency_symbol": "$"
+    },
+    "display_status": "In Transit",
+    "shipping_label_download_url": "<REDACTED>"
+   },
+   {
+    "id": "6beadf643e3c4b0e69ccf946",
+    "user_id": "98e935ceab373d8185de440d",
+    "seller_id": "0123456789abcdef01234567",
+    "state": "seller_confirm_initiated",
+    "is_bundle": false,
+    "title": "Sample Denim Jacket",
+    "total_price_amount": {
+     "val": "30.0",
+     "currency_code": "USD",
+     "currency_symbol": "$"
+    },
+    "inventory_booked_at": "2026-10-15T14:48:30-07:00",
+    "bundle_size": 1,
+    "buyer": {
+     "id": "98e935ceab373d8185de440d",
+     "username": "<REDACTED>"
+    },
+    "seller_earning_amount": {
+     "val": "24.0",
+     "currency_code": "USD",
+     "currency_symbol": "$"
+    },
+    "display_status": "In Transit",
+    "shipping_label_download_url": "<REDACTED>"
+   },
+   {
+    "id": "ad222c90ef6a967d59a30cc1",
+    "user_id": "5604b4ea6ddb9c03aa0b038b",
+    "seller_id": "0123456789abcdef01234567",
+    "state": "cancelled",
+    "is_bundle": false,
+    "title": "Sample Wool Scarf",
+    "total_price_amount": {
+     "val": "25.0",
+     "currency_code": "USD",
+     "currency_symbol": "$"
+    },
+    "inventory_booked_at": "2026-06-26T09:28:56-07:00",
+    "bundle_size": 1,
+    "buyer": {
+     "id": "5604b4ea6ddb9c03aa0b038b",
+     "username": "<REDACTED>"
+    },
+    "seller_earning_amount": {
+     "val": "20.0",
+     "currency_code": "USD",
+     "currency_symbol": "$"
+    },
+    "display_status": "Order Cancelled",
+    "shipping_label_download_url": "<REDACTED>"
+   }
+  ]
+ },
+ "meta": {
+  "count": 100,
+  "next_max_id": "1767484286.166"
+ },
+ "presentation": {},
+ "trace_id": "<TRACE>"
+}

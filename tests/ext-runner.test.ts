@@ -252,6 +252,23 @@ describe("worker end to end on the mock API", () => {
     h.advance(60_000);
     expect(await w.poll(h.deps)).toMatchObject({ ran: 0, notes: [expect.stringMatching(/changed something/)] });
   });
+  it("a read over requests (sign-in check) that hits 'shape changed' falls back to the tab and does NOT pause", async () => {
+    const { svc } = await setup();
+    const h = harness(svc, (u) => (u.endsWith("/feed") ? { kind: "done", loggedIn: true } : { kind: "done", result: { note: "tab" } }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    const ran: string[] = [];
+    h.deps.transports = { poshmark: { name: "request", supports: (a) => a.action === "checkLogin", run: async (a) => { ran.push(a.action); return { ok: false, code: "shape_changed", message: "Poshmark changed something" }; } } };
+    const opened = h.fb.log.opened.length;
+    const r = await w.checkLogin(h.deps, "poshmark");
+    expect(ran).toEqual(["checkLogin"]);
+    expect(r).toMatchObject({ ok: true, loggedIn: true });
+    expect(h.fb.log.opened.length).toBe(opened + 1); // the tab path ran
+    expect(h.state.pacing.mp.poshmark?.paused ?? false).toBe(false);
+    // "signed out" over requests is confirmed in a tab before it holds jobs back
+    h.deps.transports = { poshmark: { name: "request", supports: (a) => a.action === "checkLogin", run: async () => ({ ok: true, result: {}, loggedIn: false }) } };
+    h.advance(10 * 60_000);
+    expect(await w.checkLogin(h.deps, "poshmark")).toMatchObject({ ok: true, loggedIn: true });
+  });
   it("Check now says why nothing ran (waiting between jobs, paused here or on the website)", async () => {
     const { svc, enqueue } = await setup();
     const h = harness(svc, () => ({ kind: "done", loggedIn: true }));
