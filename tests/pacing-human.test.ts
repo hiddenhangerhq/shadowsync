@@ -120,3 +120,26 @@ describe("popup 'next action' line", () => {
     expect(P.nextActionText(T0 + 5 * 60_000, T0)).toMatch(/^Next action around \d{1,2}:\d{2}/);
   });
 });
+
+describe("429 back-off", () => {
+  it("grows 2, 4, 8 ... min, respects Retry-After, caps at 6 h", () => {
+    expect(P.rateBackoffMs(1)).toBe(2 * 60_000);
+    expect(P.rateBackoffMs(2)).toBe(4 * 60_000);
+    expect(P.rateBackoffMs(3)).toBe(8 * 60_000);
+    expect(P.rateBackoffMs(10)).toBe(60 * 60_000);
+    expect(P.rateBackoffMs(1, 30 * 60_000)).toBe(30 * 60_000);
+    expect(P.rateBackoffMs(1, 10 * 3_600_000)).toBe(6 * 3_600_000);
+  });
+  it("finish on rate_limited sets pausedUntil and clears the streak on the next success", () => {
+    let s = P.emptyPacing();
+    const now = 1_000_000;
+    s = P.finish(s, "poshmark", { ok: false, code: "rate_limited", retryAfterMs: null }, now, 0.5);
+    expect(s.mp.poshmark!.pausedUntil).toBe(now + 2 * 60_000);
+    expect(s.mp.poshmark!.rateStreak).toBe(1);
+    s = P.finish(s, "poshmark", { ok: false, code: "rate_limited" }, now + 1, 0.5);
+    expect(s.mp.poshmark!.rateStreak).toBe(2);
+    expect(s.mp.poshmark!.pausedUntil).toBe(now + 1 + 4 * 60_000);
+    s = P.finish(s, "poshmark", { ok: true }, now + 2, 0.5);
+    expect(s.mp.poshmark!.rateStreak).toBe(0);
+  });
+});

@@ -74,7 +74,7 @@ export const ACTION_SCHEMAS = {
   delist: obj({ ...listingRef, saleId: text(80), soldOn: text(40), mode: oneOf(["delete", "not_for_sale"] as const) }, ["url", "saleId", "soldOn", "mode"]),
   markSold: obj({ ...listingRef, saleId: text(80), soldOn: text(40), mode: oneOf(["delete", "not_for_sale"] as const) }, ["url", "saleId", "soldOn", "mode"]),
   updateQuantity: obj({ ...listingRef, quantity: num({ min: 0, max: 999, int: true }) }, ["url"]),
-  updateListing: obj({ ...listingRef, title: text(80), description: text(5000), price: num({ min: 1, max: 100_000 }) }, ["url", "title", "description", "price"]),
+  updateListing: obj({ ...listingRef, title: text(80), description: text(5000), price: num({ min: 1, max: 100_000 }), availability: oneOf(["for_sale", "not_for_sale"] as const) }, ["url", "title", "description", "price", "availability"]),
   createListing: obj(
     { title: str({ min: 1, max: 80 }), description: text(5000), price: num({ min: 1, max: 100_000 }), originalPrice: num({ min: 0, max: 100_000 }), brand: text(80), size: text(40) },
     ["description", "originalPrice", "brand", "size"],
@@ -89,6 +89,8 @@ export interface ActionRequest {
   jobId: string | null; marketplace: ExtMarketplace; action: Action; payload: Record<string, unknown>;
   /** The item is Sold in Shadow Sync: the extension refuses createListing / updateListing / updateQuantity above 0 (relist guard). */
   itemSold?: boolean;
+  /** The item's SKU (used by the extension to keep unconfirmed request writes on TEST items only). */
+  itemSku?: string | null;
 }
 /** Relist guard, extension side (same rule as lib/jobs/sold.ts isRelist). */
 export const isRelistAction = (a: Action, payload: Record<string, unknown>) =>
@@ -108,7 +110,7 @@ export function actionForJob(jobType: JobType, payload: Record<string, unknown>)
 /** Server side: build the action payload for a claimed job from OUR data only (listing id from our listing row, fields from the item). */
 export interface JobContext {
   listing?: { externalId: string | null; url: string | null } | null;
-  item?: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null; status?: string } | null;
+  item?: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null; status?: string; sku?: string | null } | null;
   soldAction?: "delete" | "not_for_sale";
   saleConfirmed?: boolean;
 }
@@ -122,6 +124,8 @@ export function buildActionRequest(job: Pick<Job, "id" | "marketplace" | "jobTyp
     return { ...(externalId ? { externalId } : {}), ...(url ? { url } : {}) };
   };
   const pick = (keys: string[]) => Object.fromEntries(keys.filter((k) => p[k] !== undefined && p[k] !== null).map((k) => [k, p[k]]));
+  // sku on the job payload (test actions) or on the item (poll) -> itemSku on the action; never left in the action payload.
+  const itemSku = (typeof p.sku === "string" && p.sku ? p.sku : null) ?? (ctx.item?.sku ? ctx.item.sku : null);
   let payload: Record<string, unknown>;
   switch (action) {
     case "delist": case "markSold":
@@ -129,7 +133,7 @@ export function buildActionRequest(job: Pick<Job, "id" | "marketplace" | "jobTyp
       payload = { ...ref(), ...pick(["saleId", "soldOn"]), mode: (ctx.soldAction ?? "delete") === "delete" && ctx.saleConfirmed === true ? "delete" : "not_for_sale" };
       break;
     case "updateQuantity": payload = { ...ref(), ...pick(["quantity"]) }; break;
-    case "updateListing": payload = { ...ref(), ...pick(["title", "description", "price"]) }; break;
+    case "updateListing": payload = { ...ref(), ...pick(["title", "description", "price", "availability"]) }; break;
     case "createListing": {
       const it = ctx.item;
       payload = {
@@ -144,7 +148,11 @@ export function buildActionRequest(job: Pick<Job, "id" | "marketplace" | "jobTyp
     }
     default: payload = {};
   }
-  return { jobId: job.id, marketplace: job.marketplace, action, payload, ...(ctx.item?.status === "sold" ? { itemSold: true } : {}) };
+  return {
+    jobId: job.id, marketplace: job.marketplace, action, payload,
+    ...(ctx.item?.status === "sold" ? { itemSold: true } : {}),
+    ...(itemSku ? { itemSku } : {}),
+  };
 }
 
 // ---------------------------------------------------------------- results the extension reports

@@ -45,6 +45,8 @@ export function actionLabel(action: Action, payload: Record<string, unknown> = {
       if (isNum(payload.price)) parts.push(`price${change(money, payload.price, prev.price)}`);
       if (isStr(payload.title)) parts.push(`title${change(quote, payload.title, prev.title)}`);
       if (isStr(payload.description)) parts.push("description");
+      if (payload.availability === "not_for_sale") parts.push("Not For Sale");
+      if (payload.availability === "for_sale") parts.push("For Sale");
       if (isNum(payload.quantity)) parts.push(`quantity${change(String, payload.quantity, prev.quantity)}`);
       return parts.length ? `Change ${parts.join(" and ")}` : "Edit listing";
     }

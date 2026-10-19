@@ -238,6 +238,7 @@ describe("worker end to end on the mock API", () => {
     await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
     const ran: string[] = [];
     h.deps.transports = { poshmark: { name: "request", supports: (a) => a.action === "delist", run: async (a) => { ran.push(a.action); return { ok: false, code: "shape_changed", message: "Poshmark changed something, sync paused, update coming (nothing was changed: GET answered 410)" }; } } };
+    await w.setRequestWrites(h.deps, "all"); // this test is about shape_changed, not the TEST-SKU gate
     const { job } = await enqueue();
     h.advance(1000);
     const opened = h.fb.log.opened.length;
@@ -251,6 +252,21 @@ describe("worker end to end on the mock API", () => {
     await enqueue();
     h.advance(60_000);
     expect(await w.poll(h.deps)).toMatchObject({ ran: 0, notes: [expect.stringMatching(/changed something/)] });
+  });
+  it("unconfirmed request writes stay on TEST SKUs (others keep the tab); reads always use requests", async () => {
+    const { svc } = await setup();
+    const h = harness(svc, () => ({ kind: "done", result: { note: "tab" } }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    const ran: string[] = [];
+    h.deps.transports = { poshmark: { name: "request", supports: (a) => a.action === "updateListing" || a.action === "getSales", run: async (a) => { ran.push(`${a.action}:${a.itemSku ?? ""}`); return { ok: true, result: { note: "req" }, ...(a.action === "getSales" ? { sales: [], nextCursor: null } : {}) }; } } };
+    const opened = h.fb.log.opened.length;
+    await w.execute(h.deps, { jobId: null, marketplace: "poshmark", action: "updateListing", payload: { externalId: "a1b2c3d4e5f6a1b2c3d4e5f6", price: 26 }, itemSku: "JEANS-1" });
+    expect(ran).toEqual([]); // non-TEST write -> tab
+    expect(h.fb.log.opened.length).toBe(opened + 1);
+    await w.execute(h.deps, { jobId: null, marketplace: "poshmark", action: "updateListing", payload: { externalId: "a1b2c3d4e5f6a1b2c3d4e5f6", price: 26 }, itemSku: "TEST-1" });
+    expect(ran).toEqual(["updateListing:TEST-1"]);
+    await w.execute(h.deps, { jobId: null, marketplace: "poshmark", action: "getSales", payload: {}, itemSku: "JEANS-1" });
+    expect(ran).toEqual(["updateListing:TEST-1", "getSales:JEANS-1"]); // reads always (SKU ignored)
   });
   it("a read over requests (sign-in check) that hits 'shape changed' falls back to the tab and does NOT pause", async () => {
     const { svc } = await setup();

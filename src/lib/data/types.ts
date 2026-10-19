@@ -335,7 +335,7 @@ export interface ExtPollInput {
 export interface ClaimedExtJob {
   job: Job;
   listing: { externalId: string | null; url: string | null } | null;
-  item: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null; status: ItemStatus } | null;
+  item: { title: string; description: string | null; askingPrice: number | null; brand: string | null; size: string | null; status: ItemStatus; sku?: string | null } | null;
   /** This marketplace's setting (default "delete"). */
   soldAction: SoldAction;
   /** The job's saleId is a stored sale matched to this job's item. Delete happens ONLY when this is true. */

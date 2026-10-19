@@ -1,0 +1,20 @@
+{
+ "data": {
+  "id": "aaaaaaaaaaaaaaaaaaaaaaaa",
+  "line_items": [
+   {
+    "id": "bbbbbbbbbbbbbbbbbbbbbbbb",
+    "parent_post_id": "fedcba9876543210fedcba98",
+    "product_id": "fedcba9876543210fedcba98",
+    "title": "Sample Track Pants",
+    "price_amount": {
+     "val": "20.0",
+     "currency_code": "USD"
+    }
+   }
+  ],
+  "inventory_booked_at": "2026-10-16T10:58:26-07:00"
+ },
+ "meta": {},
+ "trace_id": "<TRACE>"
+}

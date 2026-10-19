@@ -23,9 +23,10 @@ const originOf = (s: Sender): string | null => {
 };
 
 // ---------------------------------------------------------------- web page (our dashboard) -> extension
-const externalSchema = obj({ type: oneOf(["pair", "status", "run", "speed"] as const), code: str({ min: 8, max: 12 }), action: oneOf(["checkLogin"] as const), marketplace: oneOf(EXT_MARKETPLACES), speed: oneOf(["normal", "careful"] as const) }, ["code", "action", "marketplace", "speed"]);
+const externalSchema = obj({ type: oneOf(["pair", "status", "run", "speed", "requestWrites"] as const), code: str({ min: 8, max: 12 }), action: oneOf(["checkLogin"] as const), marketplace: oneOf(EXT_MARKETPLACES), speed: oneOf(["normal", "careful"] as const), mode: oneOf(["test", "all"] as const) }, ["code", "action", "marketplace", "speed", "mode"]);
 export type ExternalRequest = { type: "pair"; code: string } | { type: "status" } | { type: "run"; action: "checkLogin"; marketplace: ExtMarketplace }
-  | { type: "speed"; marketplace: ExtMarketplace; speed: "normal" | "careful" };
+  | { type: "speed"; marketplace: ExtMarketplace; speed: "normal" | "careful" }
+  | { type: "requestWrites"; mode: "test" | "all" };
 
 export function parseExternal(msg: unknown, sender: Sender, cfg: HandlerConfig): { ok: true; req: ExternalRequest } | Rejected {
   if (originOf(sender) !== cfg.apiOrigin) return { ok: false, reason: "foreign_origin" };
@@ -68,7 +69,8 @@ const envelope = obj({
   payload: (v, p) => { if (!v || typeof v !== "object" || Array.isArray(v)) throw new SchemaError(p, "must be an object"); return v as Record<string, unknown>; },
   leaseExpiresAt: nullable(str({ max: 40 })), attempt: num({ min: 0, max: 50, int: true }),
   itemSold: (v, p) => { if (typeof v !== "boolean") throw new SchemaError(p, "must be true or false"); return v; },
-}, ["leaseExpiresAt", "attempt", "itemSold"]);
+  itemSku: nullable(str({ max: 80 })),
+}, ["leaseExpiresAt", "attempt", "itemSold", "itemSku"]);
 export type JobCheck = { ok: true; value: ActionRequest } | { ok: false; code: "invalid_payload" | "url_not_allowed" | "relist_blocked"; message: string };
 
 export function validateAction(raw: unknown): JobCheck {
@@ -86,5 +88,5 @@ export function validateAction(raw: unknown): JobCheck {
   if (e.itemSold === true && isRelistAction(e.action as Action, payload)) {
     return { ok: false, code: "relist_blocked", message: `This item is Sold in ${BRAND}; undo the sale to list it again` };
   }
-  return { ok: true, value: { jobId: e.jobId, marketplace: m, action: e.action as Action, payload, ...(e.itemSold ? { itemSold: true } : {}) } };
+  return { ok: true, value: { jobId: e.jobId, marketplace: m, action: e.action as Action, payload, ...(e.itemSold ? { itemSold: true } : {}), ...(e.itemSku ? { itemSku: e.itemSku } : {}) } };
 }

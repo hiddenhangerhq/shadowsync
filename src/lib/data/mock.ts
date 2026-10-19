@@ -658,7 +658,7 @@ function makeDeviceGateway(db: MockDb): DeviceGateway {
           return {
             job: { ...j },
             listing: l ? { externalId: l.externalId, url: l.url } : null,
-            item: it ? { title: it.title, description: it.description, askingPrice: it.askingPrice, brand: it.brand, size: it.size, status: it.status } : null,
+            item: it ? { title: it.title, description: it.description, askingPrice: it.askingPrice, brand: it.brand, size: it.size, status: it.status, sku: it.sku } : null,
             soldAction: (db.t.marketplaceSettings ?? []).find((x) => x.userId === d.userId && x.marketplace === j.marketplace)?.soldAction ?? DEFAULT_SOLD_ACTION,
             saleConfirmed: typeof j.payload?.saleId === "string" && !!j.itemId && db.t.sales.some((x) => x.id === j.payload.saleId && x.userId === d.userId && x.itemId === j.itemId),
           };

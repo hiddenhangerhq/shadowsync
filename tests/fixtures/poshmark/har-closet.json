@@ -1,0 +1,23 @@
+{
+ "data": [
+  {
+   "id": "fedcba9876543210fedcba98",
+   "title": "TEST-1 Black jeans",
+   "inventory": {
+    "status": "available"
+   }
+  },
+  {
+   "id": "111111111111111111111111",
+   "title": "Other",
+   "inventory": {
+    "status": "available"
+   }
+  }
+ ],
+ "more": {
+  "next_max_id": null
+ },
+ "meta": {},
+ "trace_id": "<TRACE>"
+}

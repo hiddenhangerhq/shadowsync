@@ -22,10 +22,18 @@ export interface ExtState {
   lastPollAt: number | null; lastError: string | null; log: LogLine[];
   /** Last listing scan per marketplace (once a day): flags Sold items still live. */
   listingsScanAt?: Partial<Record<ExtMarketplace, number>>;
+  /**
+   * Who gets Poshmark listing changes over background requests (unconfirmed write shapes).
+   * "test" (default) = only items whose SKU starts with TEST; "all" = every listing (you opt in in the popup).
+   * Reads (sign-in check, sales, closet) always use requests when available.
+   */
+  requestWrites?: "test" | "all";
 }
 export const emptyState = (): ExtState => ({
-  token: null, deviceId: null, deviceLabel: null, pacing: emptyPacing(), logins: {}, server: null, lastPollAt: null, lastError: null, log: [],
+  token: null, deviceId: null, deviceLabel: null, pacing: emptyPacing(), logins: {}, server: null, lastPollAt: null, lastError: null, log: [], requestWrites: "test",
 });
+/** Unconfirmed request writes stay on TEST items until you widen them. */
+export const isTestSku = (sku: string | null | undefined) => /^test\b/i.test((sku ?? "").trim());
 export interface Store { load(): Promise<ExtState>; save(s: ExtState): Promise<void> }
 export interface Deps {
   api: Api; browser: Browser; store: Store; now: () => number; rand: () => number; version: string;
@@ -34,9 +42,16 @@ export interface Deps {
 }
 /** Run one action on the best transport: the request one when it has a plan for it, else the tab (DOM) one. */
 const READ_ONLY = new Set<ActionRequest["action"]>(["checkLogin", "getSales", "getListings"]);
+export const requestWritesAllowed = (s: Pick<ExtState, "requestWrites">, a: ActionRequest) =>
+  READ_ONLY.has(a.action) || s.requestWrites === "all" || isTestSku(a.itemSku);
 export async function execute(d: Deps, a: ActionRequest, opts: { onProgress?: (m: string) => void } = {}): Promise<RunOutcome> {
   const t = d.transports?.[a.marketplace];
   if (!t || !t.supports(a)) return runAction(d.browser, a, opts);
+  // Writes over requests stay on TEST SKUs until you widen them in the popup (unconfirmed shapes).
+  if (!READ_ONLY.has(a.action)) {
+    const st = await d.store.load();
+    if (!requestWritesAllowed(st, a)) return runAction(d.browser, a, opts);
+  }
   const out = await t.run(a, opts);
   // A read (sign-in check, sales scan) that no longer matches what we expect falls back to the tab instead of pausing: nothing was
   // written, and the tab path still works. Writes never fall back (shape_changed pauses that marketplace).
@@ -79,7 +94,7 @@ async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getS
   await update(d, (s) => {
     // A sign-in check that can't tell or doesn't load is "unknown", never an error (only a security check counts).
     const code = !out.ok && action === "checkLogin" && !["captcha", "challenge", "verification_required"].includes(out.code) ? "deferred" : out.ok ? null : out.code;
-    s.pacing = finish(s.pacing, m, code === null ? { ok: true } : { ok: false, code }, d.now(), d.rand());
+    s.pacing = finish(s.pacing, m, code === null ? { ok: true } : { ok: false, code, retryAfterMs: !out.ok && "retryAfterMs" in out ? out.retryAfterMs : null }, d.now(), d.rand());
     if (out.ok && out.loggedIn !== undefined) s.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
     if (!out.ok && out.code === "signed_out") s.logins[m] = { loggedIn: false, at: d.now() };
     if (!out.ok && out.code === "shape_changed") onShapeChanged(s, m, d.now());
@@ -164,7 +179,7 @@ export async function runJob(d: Deps, raw: { jobId: string } & Record<string, un
     out = await execute(d, a, { onProgress: (msg) => { d.api.progress(raw.jobId, msg).catch(() => undefined); } });
   } finally { clearInterval(lease); }
   await update(d, (st) => {
-    st.pacing = finish(st.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code }, d.now(), d.rand());
+    st.pacing = finish(st.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code, retryAfterMs: out.retryAfterMs ?? null }, d.now(), d.rand());
     if (!out.ok && out.code === "signed_out") st.logins[m] = { loggedIn: false, at: d.now() };
     if (!out.ok && out.code === "shape_changed") onShapeChanged(st, m, d.now());
     if (out.ok && out.loggedIn !== undefined) st.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
@@ -245,6 +260,9 @@ export async function upgrade(d: Deps) {
 export const pauseMarketplace = (d: Deps, m: ExtMarketplace, paused: boolean) =>
   update(d, (s) => { s.pacing = setMarketplacePaused(s.pacing, m, paused, d.now()); addLog(s, d.now(), `${paused ? "Paused" : "Resumed"} ${HOST_TABLE[m].label}`); });
 /** Speed for one marketplace on this browser (Settings > Extension). */
+export async function setRequestWrites(d: Deps, mode: "test" | "all") {
+  await update(d, (s) => { s.requestWrites = mode; addLog(s, d.now(), mode === "all" ? "Poshmark: request writes ON for every listing (unconfirmed shapes; watch the first few)" : "Poshmark: request writes back to TEST items only"); });
+}
 export const setMarketplaceSpeed = (d: Deps, m: ExtMarketplace, speed: Speed) =>
   update(d, (s) => { s.pacing = setSpeed(s.pacing, m, speed, d.now()); addLog(s, d.now(), `${HOST_TABLE[m].label}: speed set to ${speed === "careful" ? "Careful" : "Normal"}`); });
 /** How soon the next job could run on any connected marketplace (ms; Infinity = not soon: paused, signed out, nothing connected).

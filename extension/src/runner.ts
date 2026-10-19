@@ -19,7 +19,7 @@ export interface Browser {
 }
 export type RunOutcome =
   | { ok: true; result: DoneResult; loggedIn?: boolean | null; sales?: ExtScanSale[]; nextCursor?: string | null; listingIds?: string[] }
-  | { ok: false; code: ResultCode; message: string };
+  | { ok: false; code: ResultCode; message: string; retryAfterMs?: number | null };
 
 export const MAX_STEPS = 8;
 /** Chrome's errors when our tab was closed (by you or the browser) or swapped for another one mid-job. */

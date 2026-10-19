@@ -88,6 +88,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
             ["title", "Change title", "", "text"],
             ["count", "Count my listings", null, null],
             ["not_for_sale", "Set Not For Sale", null, null],
+            ["for_sale", "Set For Sale again", null, null],
           ] as const).map(([a, label, def, type]) => (
             <form key={a} action={testAction.bind(null, id, l.id, a)} className="row" style={{ gap: 8, padding: "4px 0" }}>
               {type && <input className="input" name="value" type={type} defaultValue={def ?? ""} required style={{ maxWidth: 200 }} />}

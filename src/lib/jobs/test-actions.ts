@@ -67,7 +67,7 @@ export async function linkListing(svc: Services, itemId: string, input: { market
   return { status: 200, body: { listing } };
 }
 
-export const TEST_ACTIONS = ["quantity", "price", "title", "count", "not_for_sale", "sold_delete"] as const;
+export const TEST_ACTIONS = ["quantity", "price", "title", "count", "not_for_sale", "for_sale", "sold_delete"] as const;
 export type TestAction = (typeof TEST_ACTIONS)[number];
 
 /** One test button -> one normal job (createJob). sold_delete first records a test sale (marketplace "other"), so the delete is a CONFIRMED sale. */
@@ -85,24 +85,27 @@ export async function queueTestAction(svc: Services, itemId: string, listingId: 
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const last = (f: "price" | "title" | "quantity") => done.find((j) => j.payload[f] !== undefined && j.payload[f] !== null)?.payload[f];
   const base = { marketplace: listing.marketplace, itemId, listingId: listing.id };
+  // sku rides on the job payload only so the extension can gate unconfirmed request writes; buildActionRequest lifts it to itemSku.
+  const withSku = (payload: Record<string, unknown>) => ({ ...payload, ...(item.sku ? { sku: item.sku } : {}) });
   const v = value.trim();
   switch (action as TestAction) {
     case "quantity": {
       const n = Number(v);
       if (!Number.isInteger(n) || n < 0 || n > 999) return fail(400, "Quantity must be a whole number from 0 to 999");
-      return createJob(svc, { ...base, jobType: "update_listing", payload: { quantity: n, ...(last("quantity") !== undefined ? { previous: { quantity: last("quantity") } } : {}) }, idempotencyKey: key(`quantity:${n}`) });
+      return createJob(svc, { ...base, jobType: "update_listing", payload: withSku({ quantity: n, ...(last("quantity") !== undefined ? { previous: { quantity: last("quantity") } } : {}) }), idempotencyKey: key(`quantity:${n}`) });
     }
     case "price": {
       const n = Number(v);
       if (!Number.isFinite(n) || n < 1 || n > 100000) return fail(400, "Price must be a number of dollars");
-      return createJob(svc, { ...base, jobType: "update_listing", payload: { price: Math.round(n), previous: { price: last("price") ?? listing.price ?? item.askingPrice ?? null } }, idempotencyKey: key(`price:${n}`) });
+      return createJob(svc, { ...base, jobType: "update_listing", payload: withSku({ price: Math.round(n), previous: { price: last("price") ?? listing.price ?? item.askingPrice ?? null } }), idempotencyKey: key(`price:${n}`) });
     }
     case "title": {
       if (!v || v.length > 80) return fail(400, "Title must be 1 to 80 characters");
-      return createJob(svc, { ...base, jobType: "update_listing", payload: { title: v, previous: { title: last("title") ?? item.title } }, idempotencyKey: key("title") });
+      return createJob(svc, { ...base, jobType: "update_listing", payload: withSku({ title: v, previous: { title: last("title") ?? item.title } }), idempotencyKey: key("title") });
     }
     case "count": return createJob(svc, { ...base, jobType: "sync_status", idempotencyKey: key("count") });
-    case "not_for_sale": return createJob(svc, { ...base, jobType: "delist", idempotencyKey: key("nfs") });
+    case "not_for_sale": return createJob(svc, { ...base, jobType: "delist", payload: withSku({}), idempotencyKey: key("nfs") });
+    case "for_sale": return createJob(svc, { ...base, jobType: "update_listing", payload: withSku({ availability: "for_sale" }), idempotencyKey: key("for_sale") });
     case "sold_delete": {
       if (v !== "DELETE") return fail(400, 'Type DELETE in the box to confirm');
       const sale = await svc.store.sales.record({
@@ -112,7 +115,7 @@ export async function queueTestAction(svc: Services, itemId: string, listingId: 
       await svc.store.items.update(itemId, { status: "sold", dateSold: item.dateSold ?? sale.soldAt, priceSold: item.priceSold ?? sale.price, platform: item.platform ?? "other" });
       await svc.store.itemSyncLog.append({ event: "sale_detected", source: "manual", itemId, marketplace: "other", ref: `sale:${sale.id}`, detail: `Test sale ${sale.orderId} recorded by you` }).catch(() => undefined);
       const jobType = listing.marketplace === "poshmark" || listing.marketplace === "depop" || listing.marketplace === "grailed" || listing.marketplace === "mercari" ? "mark_sold" : "delist";
-      return createJob(svc, { ...base, jobType, payload: { saleId: sale.id, soldOn: "other" }, idempotencyKey: delistKey(jobType, listing.id, sale.id) });
+      return createJob(svc, { ...base, jobType, payload: withSku({ saleId: sale.id, soldOn: "other" }), idempotencyKey: delistKey(jobType, listing.id, sale.id) });
     }
   }
 }

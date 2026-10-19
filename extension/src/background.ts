@@ -62,7 +62,7 @@ async function pollChain(): Promise<Awaited<ReturnType<typeof w.poll>>> {
 
 async function status() {
   const s = await deps.store.load();
-  return { ok: true, paired: !!s.token, deviceId: s.deviceId, version: EXT_VERSION, paused: s.pacing.devicePaused, speed: s.pacing.speed ?? {} };
+  return { ok: true, paired: !!s.token, deviceId: s.deviceId, version: EXT_VERSION, paused: s.pacing.devicePaused, speed: s.pacing.speed ?? {}, requestWrites: s.requestWrites ?? "test" };
 }
 
 // Our dashboard page (only API_ORIGIN is listed in externally_connectable, and parseExternal checks again).
@@ -72,6 +72,7 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, reply) => {
   const r = p.req;
   const work = r.type === "status" ? status()
     : r.type === "speed" ? serial(() => w.setMarketplaceSpeed(deps, r.marketplace, r.speed)).then(() => ({ ok: true }))
+    : r.type === "requestWrites" ? serial(() => w.setRequestWrites(deps, r.mode)).then(() => ({ ok: true }))
     : r.type === "pair" ? serial(() => w.pair(deps, r.code, browserLabel())).then((x) => ({ ok: true, ...x }))
     : serial(() => w.checkLogin(deps, r.marketplace)).then((x) => (x.ok ? { ok: true, loggedIn: x.loggedIn ?? null } : { ok: false, error: x.message }));
   work.then(reply, (e: Error) => reply({ ok: false, error: e.message }));

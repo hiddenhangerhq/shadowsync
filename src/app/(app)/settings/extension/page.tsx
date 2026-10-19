@@ -4,6 +4,7 @@ import { SchemaMissingError, type ExtensionDevice, type MarketplaceLoginState, t
 import { EXT_MARKETPLACES, HOST_TABLE } from "@/lib/ext/protocol";
 import PairBox from "./PairBox";
 import SpeedBox from "./SpeedBox";
+import RequestWritesBox from "./RequestWritesBox";
 import { pauseDeviceAction, pauseMarketplaceAction, revokeDeviceAction, setSoldActionAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -75,6 +76,7 @@ export default async function ExtensionSettings({ searchParams }: { searchParams
           Delists and mark-sold always go first. Errors and security checks still pause a marketplace by themselves.
         </p>
         <SpeedBox extId={extId} marketplaces={EXT_MARKETPLACES.map((m) => ({ id: m, label: HOST_TABLE[m].label }))} />
+        <RequestWritesBox extId={extId} />
       </div>
       <div className="card">
         <h2>When an item sells</h2>

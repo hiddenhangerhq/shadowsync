@@ -510,6 +510,7 @@ function createDeviceGateway(): DeviceGateway {
             item: it ? {
               title: it.title as string, description: (it.description as string | null) ?? null, brand: (it.brand as string | null) ?? null, size: (it.size as string | null) ?? null,
               askingPrice: it.asking_price === null || it.asking_price === undefined ? null : Number(it.asking_price), status: it.status as Item["status"],
+              sku: (it.sku as string | null | undefined) ?? null,
             } : null,
             soldAction: x.sold_action === "not_for_sale" ? "not_for_sale" : "delete",
             saleConfirmed: x.sale_confirmed === true,

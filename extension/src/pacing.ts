@@ -52,6 +52,7 @@ export interface MarketplacePacing {
   errors: number[];
   challengeStreak: number;
   pausedUntil: number;           // error-burst pause (timed)
+  rateStreak?: number;           // "slow down" (429) answers in a row, for the growing back-off
   paused: boolean;               // you (popup) or 2 security checks in a row
   pausedReason: string | null;
   /** Actions since the last long break, and after how many the next one comes (5-8, random). */
@@ -125,7 +126,10 @@ export const gapMs = (rand: number, speed: Speed = "normal") => {
 
 /** Second random number from the first (keeps the signature small and the tests deterministic). */
 const rand2 = (rand: number) => (Math.min(Math.max(rand, 0), 0.999999) * 7919.123) % 1;
-export function finish(s: PacingState, m: ExtMarketplace, outcome: { ok: true } | { ok: false; code: string }, now: number, rand: number): PacingState {
+/** Back-off after a "slow down" (429): 2, 4, 8 ... up to 60 minutes, or longer if the site's Retry-After says so (capped at 6 h). */
+export const rateBackoffMs = (streak: number, retryAfterMs?: number | null) =>
+  Math.min(6 * 3_600_000, Math.max(retryAfterMs ?? 0, Math.min(60 * 60_000, 2 * 60_000 * 2 ** Math.max(0, streak - 1))));
+export function finish(s: PacingState, m: ExtMarketplace, outcome: { ok: true } | { ok: false; code: string; retryAfterMs?: number | null }, now: number, rand: number): PacingState {
   const r = row(s, m, now);
   r.busy = false; r.busySince = null;
   r.nextAt = now + gapMs(rand, speedOf(s, m));
@@ -139,7 +143,14 @@ export function finish(s: PacingState, m: ExtMarketplace, outcome: { ok: true } 
     r.sinceBreak = 0;
     r.breakAfter = lb.everyMin + Math.floor(rand * (lb.everyMax - lb.everyMin + 1));
   }
-  if (outcome.ok) { r.challengeStreak = 0; return put(s, m, r); }
+  if (outcome.ok) { r.challengeStreak = 0; r.rateStreak = 0; return put(s, m, r); }
+  if (outcome.code === "rate_limited") {
+    r.rateStreak = (r.rateStreak ?? 0) + 1;
+    const wait = rateBackoffMs(r.rateStreak, outcome.retryAfterMs);
+    r.pausedUntil = Math.max(r.pausedUntil, now + wait);
+    r.pausedReason = `The site asked us to slow down; waiting ${Math.ceil(wait / 60_000)} min`;
+    return put(s, m, r);
+  }
   if (CHALLENGE.has(outcome.code)) {
     r.challengeStreak++;
     if (r.challengeStreak >= PACING.challengesInARow) { r.paused = true; r.pausedReason = "Paused after 2 security checks in a row. Solve it in your browser, then resume."; }
