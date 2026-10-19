@@ -8,6 +8,7 @@ import { parseCreateJob, parseLimit, parseStatusFilter, isUuid } from "./validat
 import { buildTimeline } from "./timeline";
 import { loadOverview } from "./overview";
 import { jobEventLabel, jobLabel } from "./labels";
+import { isUrgentJob, spreadNextRunAt } from "./spacing";
 
 export interface ApiResult { status: number; body: Record<string, unknown> }
 const fail = (status: number, error: string, extra: Record<string, unknown> = {}): ApiResult => ({ status, body: { error, ...extra } });
@@ -50,8 +51,12 @@ export const createJob = (svc: Services, body: unknown) =>
       if (l.marketplace !== r.marketplace || (r.itemId && l.itemId !== r.itemId)) return fail(400, "Listing does not belong to that item and marketplace");
     }
     const executor = executorFor(r.marketplace, await svc.store.connections.list());
+    // Big batches are spread out (next_run_at) instead of running back to back; delist / mark sold always go now.
+    const nextRunAt = executor === "extension" && !isUrgentJob(r.jobType)
+      ? spreadNextRunAt((await svc.store.jobs.list({ status: ["queued", "retry_wait"] })).filter((j) => j.marketplace === r.marketplace && j.executor === "extension" && !isUrgentJob(j.jobType)), new Date())
+      : undefined;
     const { job, created } = await svc.store.jobs.enqueue({
-      marketplace: r.marketplace, jobType: r.jobType, executor, itemId: r.itemId, listingId: r.listingId, payload: r.payload,
+      marketplace: r.marketplace, jobType: r.jobType, executor, itemId: r.itemId, listingId: r.listingId, payload: r.payload, ...(nextRunAt ? { nextRunAt } : {}),
       idempotencyKey: r.idempotencyKey ?? `manual:${r.jobType}:${r.listingId ?? `${r.itemId}:${r.marketplace}`}`,
     });
     if (created && (r.jobType === "delist" || r.jobType === "mark_sold")) {

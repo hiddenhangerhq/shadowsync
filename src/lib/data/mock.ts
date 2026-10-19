@@ -640,7 +640,8 @@ function makeDeviceGateway(db: MockDb): DeviceGateway {
           return r && r.loggedIn && !r.paused && !busy.has(mp);
         });
         const firsts = ready
-          .map((mp) => sm.pickClaimable(db.t.jobs.filter((j) => j.userId === d.userId && j.marketplace === mp), "extension", at, 1)[0])
+          .map((mp) => sm.pickClaimable(db.t.jobs.filter((j) => j.userId === d.userId && j.marketplace === mp
+            && (!(input.urgentOnly ?? []).includes(mp) || j.jobType === "delist" || j.jobType === "mark_sold")), "extension", at, 1)[0])
           .filter((j): j is Job => !!j)
           .sort(sm.claimOrder)
           .slice(0, Math.max(0, Math.min(input.limit ?? 3, 6)));

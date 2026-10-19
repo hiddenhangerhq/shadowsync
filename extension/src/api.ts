@@ -26,7 +26,7 @@ export function makeApi(origin: string, token: () => string | null, f: Fetch = (
   return {
     pairComplete: (code: string, label: string, extensionVersion: string) =>
       post<{ deviceId: string; label: string; token: string }>("/ext/pair/complete", { code, label, extensionVersion }, false),
-    poll: (body: { extensionVersion: string; marketplaces?: Record<string, boolean>; ready?: string[]; limit?: number }) => post<PollResponse>("/ext/poll", body),
+    poll: (body: { extensionVersion: string; marketplaces?: Record<string, boolean>; ready?: string[]; limit?: number; urgentOnly?: string[] }) => post<PollResponse>("/ext/poll", body),
     scanNext: (marketplace: string) => post<ExtScanNext>("/ext/scan/next", { marketplace }),
     scanReport: (marketplace: string, sales: ExtScanSale[], nextCursor: string | null) => post<ExtScanResult>("/ext/scan/report", { marketplace, sales, nextCursor }),
     listingsReport: (marketplace: string, externalIds: string[]) => post<{ seen: number; flagged: number }>("/ext/scan/listings", { marketplace, externalIds: externalIds.slice(0, 1000) }),

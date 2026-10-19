@@ -2,6 +2,7 @@
 // Popup: pair, kill switch (this browser + per marketplace), connect a marketplace (grants only that site's permission), status.
 import { EXT_MARKETPLACES, HOST_TABLE, type ExtMarketplace } from "../../src/lib/ext/protocol";
 import { originsFor } from "./chrome-browser";
+import { pairingPageUrl } from "./handler";
 import type { ExtState } from "./worker";
 import { readiness, todayCounts } from "./pacing";
 
@@ -46,9 +47,24 @@ async function render() {
     const counts = todayCounts(s.pacing, m, Date.now());
     const done = Object.values(counts).reduce((a, b) => a + (b ?? 0), 0);
     li.append(el("div", `${v.ok ? "Ready" : v.reason}${srv ? ` · dashboard: ${srv}` : ""} · ${done} today`, "muted"));
+    if (!v.ok && v.spacing && v.until) li.append(el("div", `Next action around ${new Date(v.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (spacing to stay safe)${v.urgentOk ? "; delists still go first" : ""}`, "muted"));
     const row = el("div", "", "row");
+    const autoUntil = s.pacing.mp[m]?.pausedUntil ?? 0;
+    const autoPaused = !mpPaused && autoUntil > Date.now();
+    if (autoPaused) {
+      const at = new Date(autoUntil).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const rowA = el("div", "", "row");
+      const rb = el("button", "Resume now") as HTMLButtonElement;
+      rb.onclick = async () => { if (!confirm(`${h.label} paused itself after several errors. Resume now anyway?`)) return; await send({ type: "pauseMarketplace", marketplace: m, paused: false }); void render(); };
+      rowA.append(el("span", `Auto-paused until ${at}.`, "warn"), rb); li.append(rowA);
+    }
     const p = el("button", mpPaused ? "Resume" : "Pause") as HTMLButtonElement;
-    p.onclick = async () => { await send({ type: "pauseMarketplace", marketplace: m, paused: !mpPaused }); void render(); };
+    p.onclick = async () => {
+      // Resume also clears an automatic pause (errors or security checks); confirm when it was not your own pause.
+      const reason = s.pacing.mp[m]?.pausedReason ?? "";
+      if (mpPaused && !/by you/i.test(reason) && !confirm(`${reason || "Paused automatically"}. Resume now?`)) return;
+      await send({ type: "pauseMarketplace", marketplace: m, paused: !mpPaused }); void render();
+    };
     const c = el("button", "Check sign-in") as HTMLButtonElement;
     c.onclick = async () => { say("Checking..."); const x = await send<{ ok: boolean; loggedIn?: boolean; error?: string }>({ type: "checkLogin", marketplace: m }); say(x.ok ? (x.loggedIn === true ? "Signed in" : x.loggedIn === false ? "Signed out" : "Could not tell; jobs will still run") : (x.error ?? "")); void render(); };
     const d = el("button", "Disconnect", "link") as HTMLButtonElement;
@@ -69,7 +85,7 @@ $("pairForm").addEventListener("submit", async (e) => {
 $("openPair").addEventListener("click", async () => {
   const r = await send<StateReply>({ type: "state" });
   // The page hands the code straight back to this extension (externally_connectable allows only our own site).
-  await chrome.tabs.create({ url: `${r.apiOrigin}/settings/extension?ext=${chrome.runtime.id}` });
+  await chrome.tabs.create({ url: pairingPageUrl(r.apiOrigin, chrome.runtime.id) });
 });
 $("pauseDevice").addEventListener("click", async () => {
   const r = await send<StateReply>({ type: "state" });

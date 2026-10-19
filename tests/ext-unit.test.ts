@@ -1,7 +1,7 @@
 // Extension gatekeeper, pacing / kill switch, manifest permissions, pairing codes + tokens, and SQL vs TS outcome-code parity.
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { parseExternal, parseInternal, validateAction } from "../extension/src/handler";
+import { pairingPageUrl, parseExternal, parseInternal, validateAction } from "../extension/src/handler";
 import * as P from "../extension/src/pacing";
 import { buildManifest, apiOriginFrom, BRAND, ICON_SIZES } from "../extension/src/manifest";
 import { existsSync } from "node:fs";
@@ -14,6 +14,27 @@ const page = { url: "https://shadowsync-ruby.vercel.app/settings/extension" };
 const popup = { id: cfg.extensionId, url: `chrome-extension://${cfg.extensionId}/popup.html` };
 const ID = "a1b2c3d4e5f6a1b2c3d4e5f6";
 const job = (o: Record<string, unknown> = {}) => ({ jobId: "11111111-1111-4111-8111-111111111111", marketplace: "poshmark", action: "delist", payload: { externalId: ID }, leaseExpiresAt: null, attempt: 0, ...o });
+
+describe("one-click pairing message path", () => {
+  it("the one-time code is accepted only from our own origin; foreign, look-alike, http, other-extension and origin-less senders are refused", () => {
+    expect(parseExternal({ type: "pair", code: "ABCD-EFGH" }, { url: "https://shadowsync-ruby.vercel.app/settings/extension?ext=x" }, cfg)).toEqual({ ok: true, req: { type: "pair", code: "ABCD-EFGH" } });
+    expect(parseExternal({ type: "pair", code: "ABCD-EFGH" }, { origin: "https://shadowsync-ruby.vercel.app" }, cfg).ok).toBe(true);
+    for (const s of [{ url: "https://evil.example/settings/extension" }, { origin: "https://evil.example" }, { url: "https://shadowsync-ruby.vercel.app.evil.com/" },
+      { url: "http://shadowsync-ruby.vercel.app/" }, { url: "https://x.shadowsync-ruby.vercel.app/" }, { origin: "null" }, {}, { url: "chrome-extension://abc/popup.html" }]) {
+      expect(parseExternal({ type: "pair", code: "ABCD-EFGH" }, s, cfg).ok).toBe(false);
+    }
+    // the origin wins over a claimed url (a page cannot pretend)
+    expect(parseExternal({ type: "pair", code: "ABCD-EFGH" }, { origin: "https://evil.example", url: "https://shadowsync-ruby.vercel.app/" }, cfg).ok).toBe(false);
+    expect(parseExternal({ type: "pair", code: "ABCD-EFGH" }, { ...page, id: "otherextensionidotherextensionid" }, cfg)).toEqual({ ok: false, reason: "foreign_extension" });
+    expect(parseExternal({ type: "pair" }, page, cfg).ok).toBe(false);
+    expect(parseExternal({ type: "pair", code: "x" }, page, cfg).ok).toBe(false);
+    expect(parseExternal({ type: "pair", code: "ABCD-EFGH", token: "t" }, page, cfg).ok).toBe(false); // nothing else rides along
+  });
+  it("after install the extension opens only our own Connect page, with its id", () => {
+    expect(pairingPageUrl("https://shadowsync-ruby.vercel.app", "abcdefghijklmnopabcdefghijklmnop")).toBe("https://shadowsync-ruby.vercel.app/settings/extension?ext=abcdefghijklmnopabcdefghijklmnop");
+    expect(buildManifest("https://shadowsync-ruby.vercel.app", "1.0.3").externally_connectable).toEqual({ matches: ["https://shadowsync-ruby.vercel.app/*"] });
+  });
+});
 
 describe("message allow-list", () => {
   it("web pages: only our origin, only pair / status / read-only checkLogin", () => {
@@ -96,8 +117,8 @@ describe("pacing and kill switch", () => {
   it("daily caps per action reset at local midnight", () => {
     let s = P.emptyPacing();
     for (let i = 0; i < P.PACING.dailyCaps.createListing; i++) s = P.finish(P.begin(s, "poshmark", "createListing", T), "poshmark", { ok: true }, T, 0);
-    expect(P.canRun(s, "poshmark", "createListing", T + 2 * MIN)).toMatchObject({ ok: false, reason: expect.stringMatching(/Daily limit/) });
-    expect(P.canRun(s, "poshmark", "delist", T + 2 * MIN).ok).toBe(true);
+    expect(P.canRun(s, "poshmark", "createListing", T + 10 * MIN)).toMatchObject({ ok: false, reason: expect.stringMatching(/Daily limit/) }); // after the long break
+    expect(P.canRun(s, "poshmark", "delist", T + 10 * MIN).ok).toBe(true);
     expect(P.canRun(s, "poshmark", "createListing", T + 24 * 60 * MIN).ok).toBe(true);
   });
   it("an error burst pauses for an hour; signed-out does not count", () => {
@@ -124,6 +145,23 @@ describe("pacing and kill switch", () => {
     s = P.setMarketplacePaused(P.setDevicePaused(s, false), "poshmark", true, T);
     expect(P.canRun(s, "poshmark", "delist", T).ok).toBe(false);
     expect(P.canRun(s, "depop", "delist", T).ok).toBe(true);
+  });
+});
+
+describe("1.0.3 upgrade: clear old error-burst pauses", () => {
+  it("drops error counters and the timed pause, keeps your own pause and the security-check pause", () => {
+    const T = Date.now();
+    let s = P.emptyPacing();
+    for (let i = 0; i < 3; i++) s = P.finish(P.begin(s, "poshmark", "checkLogin", T), "poshmark", { ok: false, code: "unexpected_page" }, T + i, 0);
+    expect(P.readiness(s, "poshmark", T + 10)).toMatchObject({ ok: false, reason: expect.stringMatching(/an hour after 3 errors/) });
+    s = P.setMarketplacePaused(s, "depop", true, T);
+    s = { ...s, mp: { ...s.mp, grailed: { ...s.mp.depop!, pausedReason: "Paused after 2 security checks in a row. Solve it in your browser, then resume." } } };
+    const c = P.clearErrorBursts(s);
+    expect(P.readiness(c, "poshmark", T + 60_000)).toEqual({ ok: true });
+    expect(c.mp.poshmark).toMatchObject({ errors: [], pausedUntil: 0, pausedReason: null, paused: false });
+    expect(c.mp.depop).toMatchObject({ paused: true, pausedReason: "Paused by you" });
+    expect(c.mp.grailed).toMatchObject({ paused: true, pausedReason: expect.stringMatching(/security checks/) });
+    expect(c.mp.poshmark?.counts).toEqual(s.mp.poshmark?.counts); // "7 today" stays a count, not an error
   });
 });
 

@@ -21,13 +21,24 @@ export default async function ExtensionSettings({ searchParams }: { searchParams
       <p className="small"><Link href="/settings">Settings</Link> / Extension</p>
       <h1>Browser extension</h1>
       <div className="card">
-        <h2>Pair a browser</h2>
+        <h2>Connect this browser</h2>
         <p className="muted small" style={{ marginTop: 0 }}>
           The extension works inside your own signed-in browser (Chrome or Edge) for marketplaces without an official API.
           It only does the fixed jobs ShadowSync queues (delist, mark sold, quantity, edits, new-listing drafts, reading your sales),
           paces itself, and stops to ask you on anything unexpected. It never sees your marketplace passwords.
         </p>
-        {missing ? <div className="banner">Pairing turns on after the one-time database setup step (<b>0006</b>).</div> : <PairBox extId={extId} />}
+        {missing ? <div className="banner">Pairing turns on after the one-time database setup step (<b>0006</b>).</div> : <PairBox extId={extId} auto={!!extId} liveDeviceIds={live.map((d) => d.id)} />}
+      </div>
+      <div className="card" id="get">
+        <h2>Get the extension</h2>
+        <p className="small" style={{ marginTop: 0 }}>Chrome Web Store: <span className="muted">coming soon (not listed yet)</span>. Until then:</p>
+        <ol className="small" style={{ paddingLeft: 18, margin: 0 }}>
+          <li>Download the extension zip and unzip it into a folder you keep (don&apos;t delete it later).</li>
+          <li>Open <b>chrome://extensions</b> (or <b>edge://extensions</b>) and turn on <b>Developer mode</b>.</li>
+          <li>Click <b>Load unpacked</b> and choose that folder.</li>
+          <li>This page opens by itself and connects the browser. No code to type.</li>
+          <li>In the extension, press <b>Connect</b> next to Poshmark.</li>
+        </ol>
       </div>
       <div className="card">
         <h2>Your browsers</h2>

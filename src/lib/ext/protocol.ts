@@ -172,8 +172,9 @@ export const PAIR_CODE = /^[0-9A-Z]{8}$/;
 const semver = str({ max: 20, pattern: /^\d{1,3}\.\d{1,3}\.\d{1,3}$/ });
 export const pairCompleteSchema = obj({ code: str({ min: 8, max: 12 }), label: str({ min: 1, max: 80 }), extensionVersion: semver }, ["label"]);
 export const pollSchema = obj(
-  { extensionVersion: semver, marketplaces: keyed(EXT_MARKETPLACES, bool), ready: arr(oneOf(EXT_MARKETPLACES), { max: EXT_MARKETPLACES.length }), limit: num({ min: 0, max: 6, int: true }) },
-  ["marketplaces", "ready", "limit"],
+  { extensionVersion: semver, marketplaces: keyed(EXT_MARKETPLACES, bool), ready: arr(oneOf(EXT_MARKETPLACES), { max: EXT_MARKETPLACES.length }), limit: num({ min: 0, max: 6, int: true }),
+    urgentOnly: arr(oneOf(EXT_MARKETPLACES), { max: EXT_MARKETPLACES.length }) },
+  ["marketplaces", "ready", "limit", "urgentOnly"],
 );
 export const scanNextSchema = obj({ marketplace: oneOf(EXT_MARKETPLACES) });
 const day = str({ pattern: /^\d{4}-\d{2}-\d{2}$/ });

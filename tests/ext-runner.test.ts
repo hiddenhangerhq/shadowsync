@@ -149,13 +149,66 @@ describe("worker end to end on the mock API", () => {
     expect(await w.poll(h.deps)).toEqual({ ran: 0, notes: ["Poshmark: signed out (sign in, then press Check sign-in)"] });
     expect((await svc.store.jobs.get(d.id))?.status).toBe("queued");
   });
+  it("upgrade: an old error-burst pause is cleared once per version, your own pause is kept, and failed sign-in checks never pause again", async () => {
+    const { svc, enqueue } = await setup();
+    let feed: StepResult = { kind: "stop", code: "unexpected_page", message: "The page did not answer" };
+    const h = harness(svc, (u, phase) => (u.endsWith("/feed") ? feed : phase === "start" ? { kind: "wait", phase: "saved", ms: 1 } : { kind: "done", result: { note: "ok" } }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    for (let i = 0; i < 5; i++) { h.advance(120_000); await w.checkLogin(h.deps, "poshmark"); }
+    expect(h.state.pacing.mp.poshmark?.errors ?? []).toEqual([]); // 3: a failed check is never an error
+    expect(h.state.pacing.mp.poshmark?.pausedUntil ?? 0).toBe(0);
+    // Simulate what 1.0.1 left behind: an error-burst pause, plus your own pause on another marketplace.
+    const until = Date.now() + 3600_000;
+    await h.deps.store.save({ ...h.state, upgradedTo: "1.0.1", pacing: { ...h.state.pacing, mp: { ...h.state.pacing.mp,
+      poshmark: { ...h.state.pacing.mp.poshmark!, pausedUntil: until, pausedReason: "Paused for an hour after 3 errors in 15 minutes", errors: [1, 2] },
+      depop: { ...h.state.pacing.mp.poshmark!, paused: true, pausedReason: "Paused by you" } } } });
+    expect(await w.upgrade(h.deps)).toBe(true);
+    expect(h.state.pacing.mp.poshmark).toMatchObject({ pausedUntil: 0, errors: [], pausedReason: null });
+    expect(h.state.pacing.mp.depop).toMatchObject({ paused: true, pausedReason: "Paused by you" });
+    expect(h.state.log[0].text).toMatch(/cleared the automatic error pause/);
+    expect(await w.upgrade(h.deps)).toBe(false); // once per version
+    feed = { kind: "done", loggedIn: true };
+    const { job } = await enqueue();
+    h.advance(120_000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 1 });
+    expect((await svc.store.jobs.get(job.id))?.status).toBe("succeeded");
+  });
+  it("Resume clears an automatic pause too", async () => {
+    const { svc } = await setup();
+    const h = harness(svc, () => ({ kind: "done", loggedIn: true }));
+    await h.deps.store.save({ ...h.state, pacing: { devicePaused: false, mp: { poshmark: { busy: false, busySince: null, nextAt: 0, day: "", counts: {}, errors: [], challengeStreak: 0,
+      pausedUntil: Date.now() + 3600_000, paused: false, pausedReason: "Paused for an hour after 3 errors in 15 minutes" } } } });
+    await w.pauseMarketplace(h.deps, "poshmark", false);
+    expect(h.state.pacing.mp.poshmark).toMatchObject({ pausedUntil: 0, paused: false, pausedReason: null });
+  });
+  it("on a long break only a delist is handed out (urgentOnly); the quantity edit waits for the break", async () => {
+    const { svc, l } = await setup();
+    const h = harness(svc, (u, phase) => (u.endsWith("/feed") ? { kind: "done", loggedIn: true } : phase === "start" ? { kind: "wait", phase: "saved", ms: 1 } : { kind: "done", result: { note: "ok" } }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    await h.deps.store.save({ ...h.state, pacing: { devicePaused: false, mp: { poshmark: { busy: false, busySince: null, nextAt: 0, day: "", counts: {}, errors: [], challengeStreak: 0,
+      pausedUntil: 0, paused: false, pausedReason: null, breakUntil: Date.now() + 5 * 60_000, sinceBreak: 0, breakAfter: 6 } } } });
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const { job: edit } = await svc.store.jobs.enqueue({ marketplace: "poshmark", jobType: "update_listing", executor: "extension", listingId: l.id, itemId: l.itemId, payload: { quantity: 2 }, nextRunAt: past });
+    const { job: del } = await svc.store.jobs.enqueue({ marketplace: "poshmark", jobType: "delist", executor: "extension", listingId: l.id, itemId: l.itemId, idempotencyKey: "d", nextRunAt: past });
+    h.advance(1000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 1 });
+    expect((await svc.store.jobs.get(del.id))?.status).toBe("succeeded");
+    h.advance(60_000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 0, notes: [expect.stringMatching(/short break.*delists still go first/)] });
+    expect((await svc.store.jobs.get(edit.id))?.status).toBe("queued");
+    h.advance(6 * 60_000);
+    expect(await w.poll(h.deps)).toMatchObject({ ran: 1 });
+    expect((await svc.store.jobs.get(edit.id))?.status).toBe("succeeded");
+  });
   it("Check now says why nothing ran (waiting between jobs, paused here or on the website)", async () => {
     const { svc, enqueue } = await setup();
     const h = harness(svc, () => ({ kind: "done", loggedIn: true }));
     await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
     await w.checkLogin(h.deps, "poshmark");
     await enqueue();
-    expect(await w.poll(h.deps)).toEqual({ ran: 0, notes: ["Poshmark: Waiting between jobs"] });
+    const r = await w.poll(h.deps) as { ran: number; notes: string[] };
+    expect(r.ran).toBe(0);
+    expect(r.notes).toEqual([expect.stringMatching(/^Poshmark: Waiting between jobs \(next action around \d{1,2}:\d{2}/)]);
     await w.pauseDevice(h.deps, true);
     expect(await w.poll(h.deps)).toEqual({ ran: 0, notes: ["This browser is paused"] });
   });

@@ -4,7 +4,7 @@ import { API_ORIGIN, EXT_VERSION } from "./env";
 import { makeApi } from "./api";
 import { chromeBrowser } from "./chrome-browser";
 import { chromeStore } from "./chrome-store";
-import { parseExternal, parseInternal, type HandlerConfig } from "./handler";
+import { pairingPageUrl, parseExternal, parseInternal, type HandlerConfig } from "./handler";
 import * as w from "./worker";
 
 let token: string | null = null;
@@ -29,7 +29,11 @@ function setupAlarms() {
   chrome.alarms.create("scan", { periodInMinutes: 15, delayInMinutes: 2 });
   chrome.alarms.create("login", { periodInMinutes: 30, delayInMinutes: 1 });
 }
-chrome.runtime.onInstalled.addListener(setupAlarms);
+chrome.runtime.onInstalled.addListener((info) => {
+  setupAlarms(); void serial(() => w.upgrade(deps));
+  // One-click pairing: right after install, open our own site's Connect page; it hands this browser a one-time code by message.
+  if (info.reason === "install") void chrome.tabs.create({ url: pairingPageUrl(API_ORIGIN, chrome.runtime.id) });
+});
 chrome.runtime.onStartup.addListener(setupAlarms);
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "poll") void serial(() => w.poll(deps));

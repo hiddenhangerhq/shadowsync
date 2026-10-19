@@ -4,7 +4,7 @@
 import { HOST_TABLE, EXT_MARKETPLACES, type ExtMarketplace, type ResultCode } from "../../src/lib/ext/protocol";
 import { validateAction } from "./handler";
 import { actionLabel } from "../../src/lib/jobs/labels";
-import { begin, canRun, emptyPacing, finish, isReady, readiness, setDevicePaused, setMarketplacePaused, type PacingState } from "./pacing";
+import { begin, canRun, clearErrorBursts, emptyPacing, finish, isReady, readiness, setDevicePaused, setMarketplacePaused, type PacingState } from "./pacing";
 import { runAction, type Browser, type RunOutcome } from "./runner";
 import { ApiError, type Api } from "./api";
 
@@ -14,6 +14,8 @@ export interface ExtState {
   pacing: PacingState;
   /** loggedIn null = checked but could not tell. Only a definite "signed out" holds jobs back. */
   logins: Partial<Record<ExtMarketplace, { loggedIn: boolean | null; at: number }>>;
+  /** Last version whose one-time upgrade step ran. */
+  upgradedTo?: string;
   server: { devicePaused: boolean; paused: Partial<Record<ExtMarketplace, string | null>> } | null;
   lastPollAt: number | null; lastError: string | null; log: LogLine[];
   /** Last listing scan per marketplace (once a day): flags Sold items still live. */
@@ -51,7 +53,9 @@ async function runLocal(d: Deps, m: ExtMarketplace, action: "checkLogin" | "getS
   await update(d, (s) => { s.pacing = begin(s.pacing, m, action, d.now()); });
   const out = await runAction(d.browser, check.value); // never throws; a crashed worker leaves "busy", which goes stale after 15 min
   await update(d, (s) => {
-    s.pacing = finish(s.pacing, m, out.ok ? { ok: true } : { ok: false, code: out.code }, d.now(), d.rand());
+    // A sign-in check that can't tell or doesn't load is "unknown", never an error (only a security check counts).
+    const code = !out.ok && action === "checkLogin" && !["captcha", "challenge", "verification_required"].includes(out.code) ? "deferred" : out.ok ? null : out.code;
+    s.pacing = finish(s.pacing, m, code === null ? { ok: true } : { ok: false, code }, d.now(), d.rand());
     if (out.ok && out.loggedIn !== undefined) s.logins[m] = { loggedIn: out.loggedIn, at: d.now() };
     if (!out.ok && out.code === "signed_out") s.logins[m] = { loggedIn: false, at: d.now() };
     if (!out.ok) addLog(s, d.now(), `${HOST_TABLE[m].label}: Failed: ${actionLabel(action, payload)}: ${out.message}`);
@@ -76,13 +80,20 @@ export async function checkAllLogins(d: Deps) {
 export const signedOut = (s: ExtState, m: ExtMarketplace) => s.logins[m]?.loggedIn === false;
 
 export async function poll(d: Deps): Promise<{ ran: number; notes?: string[] } | { skipped: string }> {
+  await upgrade(d);
   const s = await d.store.load();
   if (!s.token) return { skipped: "not_paired" };
   const mps = await connected(d);
   const now = d.now();
   const marketplaces: Record<string, boolean> = {};
   for (const m of mps) marketplaces[m] = !signedOut(s, m);
-  const ready = s.pacing.devicePaused ? [] : mps.filter((m) => !signedOut(s, m) && isReady(s.pacing, m, now));
+  const ready: ExtMarketplace[] = [], urgentOnly: ExtMarketplace[] = [];
+  if (!s.pacing.devicePaused) for (const m of mps) {
+    if (signedOut(s, m)) continue;
+    const v = readiness(s.pacing, m, now);
+    if (v.ok) ready.push(m);
+    else if (v.urgentOk) { ready.push(m); urgentOnly.push(m); } // long break: only delist / mark sold
+  }
   // Why a marketplace is not asking for jobs, for "Check now".
   const notes: string[] = [];
   if (!mps.length) notes.push("No marketplace connected (press Connect)");
@@ -90,10 +101,10 @@ export async function poll(d: Deps): Promise<{ ran: number; notes?: string[] } |
   else for (const m of mps) {
     const v = readiness(s.pacing, m, now);
     if (signedOut(s, m)) notes.push(`${HOST_TABLE[m].label}: signed out (sign in, then press Check sign-in)`);
-    else if (!v.ok) notes.push(`${HOST_TABLE[m].label}: ${v.reason}`);
+    else if (!v.ok) notes.push(`${HOST_TABLE[m].label}: ${v.reason}${v.until ? ` (next action around ${new Date(v.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })})` : ""}${v.urgentOk ? "; delists still go first" : ""}`);
   }
   let res;
-  try { res = await d.api.poll({ extensionVersion: d.version, marketplaces, ready, limit: ready.length }); }
+  try { res = await d.api.poll({ extensionVersion: d.version, marketplaces, ready, limit: ready.length, ...(urgentOnly.length ? { urgentOnly } : {}) }); }
   catch (e) { return handleApiError(d, e); }
   await update(d, (st) => {
     st.lastPollAt = now; st.lastError = null; st.deviceLabel = res.device.label;
@@ -192,5 +203,18 @@ export async function pair(d: Deps, code: string, label: string) {
 export const unpair = (d: Deps) => update(d, (s) => { s.token = null; s.deviceId = null; s.deviceLabel = null; s.server = null; addLog(s, d.now(), "Unpaired"); });
 export const pauseDevice = (d: Deps, paused: boolean) =>
   update(d, (s) => { s.pacing = setDevicePaused(s.pacing, paused); addLog(s, d.now(), paused ? "Paused this browser" : "Resumed this browser"); });
+/** Once per new version (onInstalled, and lazily on poll): clear error-burst pauses left by older builds. */
+export async function upgrade(d: Deps) {
+  const s = await d.store.load();
+  if (s.upgradedTo === d.version) return false;
+  await update(d, (st) => {
+    const had = Object.values(st.pacing.mp).some((r) => (r?.pausedUntil ?? 0) > d.now() || (r?.errors.length ?? 0) > 0);
+    st.pacing = clearErrorBursts(st.pacing);
+    st.upgradedTo = d.version;
+    if (had) addLog(st, d.now(), `Updated to ${d.version}: cleared the automatic error pause`);
+  });
+  return true;
+}
+
 export const pauseMarketplace = (d: Deps, m: ExtMarketplace, paused: boolean) =>
   update(d, (s) => { s.pacing = setMarketplacePaused(s.pacing, m, paused, d.now()); addLog(s, d.now(), `${paused ? "Paused" : "Resumed"} ${HOST_TABLE[m].label}`); });

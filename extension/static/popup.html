@@ -4,9 +4,11 @@
 <body>
   <header><img src="icon-48.png" width="22" height="22" alt=""><strong>{{BRAND}}</strong> <span id="version" class="muted"></span></header>
   <section id="pair" hidden>
-    <p>Pair this browser: on the {{BRAND}} website open <b>Settings &gt; Extension</b>, press <b>Pair this browser</b>, then type the code here.</p>
-    <p><button id="openPair" type="button">Open the pairing page</button></p>
-    <form id="pairForm"><input id="code" autocomplete="off" maxlength="9" placeholder="XXXX-XXXX" aria-label="Pairing code"><button>Pair</button></form>
+    <p>Connect this browser to your {{BRAND}} account. Sign in on the website if asked; it connects by itself.</p>
+    <p><button id="openPair" type="button">Connect on the {{BRAND}} website</button></p>
+    <details><summary class="muted">Have a code?</summary>
+      <form id="pairForm"><input id="code" autocomplete="off" maxlength="9" placeholder="XXXX-XXXX" aria-label="Pairing code"><button>Pair</button></form>
+    </details>
   </section>
   <section id="main" hidden>
     <div class="row"><span id="device"></span><button id="pauseDevice"></button></div>

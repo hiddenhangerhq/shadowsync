@@ -336,3 +336,26 @@ describe("migration 0006", () => {
     expect(await fails(`insert into alert_prefs (user_id) values ('${A}')`)).toMatch(/row-level security|duplicate/);
   });
 });
+
+describe("migration 0007 (pacing)", () => {
+  it("ext_poll_v2: on a long break (p_urgent) only delist / mark_sold are handed out; elsewhere it is ext_poll; re-runnable; anon may call it", async () => {
+    await db.exec("reset role");
+    await db.exec(sql("0007_pacing.sql"));
+    await db.exec(sql("0007_pacing.sql"));
+    await db.exec("update jobs set status = 'canceled' where status in ('queued', 'retry_wait', 'claimed', 'running')"); // earlier tests' leftovers
+    expect((await one<{ ok: boolean }>("select has_function_privilege('anon', 'ext_poll_v2(text,text,jsonb,text[],integer,text[])', 'execute') ok")).ok).toBe(true);
+    const { token } = await pair(A, "Pacing");
+    const s = await seed(A, "PACE1");
+    const edit = await addJob(A, { type: "update_listing", listing: s.posh, item: s.item, key: "pace-edit" });
+    await anon();
+    const v2 = async (urgent: string[]) => (await one<{ r: { jobs: { job: { id: string } }[] } }>(
+      "select ext_poll_v2($1, $2, $3::jsonb, $4::text[], 3, $5::text[]) as r", [token, V, JSON.stringify({ poshmark: true }), ["poshmark"], urgent])).r;
+    expect((await v2(["poshmark"])).jobs).toEqual([]); // the edit waits for the break
+    const del = await addJob(A, { type: "delist", listing: s.posh, item: s.item, key: "pace-del" });
+    await anon();
+    expect((await v2(["poshmark"])).jobs.map((j) => j.job.id)).toEqual([del]);
+    await result(token, del, false, "rejected", "x");
+    await anon();
+    expect((await v2([])).jobs.map((j) => j.job.id)).toEqual([edit]); // no break: normal order
+  });
+});

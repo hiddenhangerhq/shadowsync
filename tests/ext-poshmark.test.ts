@@ -77,7 +77,8 @@ describe("delist / markSold: set Not For Sale (reversible, never delete)", () =>
   });
   it("stayed on the edit page after Update: shows the error, or stops for you", () => {
     load("header-in", "edit-select");
-    expect(step("delist", U.edit, { externalId: ID }, "saved")).toMatchObject({ kind: "stop", code: "unexpected_page" });
+    expect(step("delist", U.edit, { externalId: ID }, "saved")).toEqual({ kind: "wait", phase: "saved2", ms: 5000 }); // give it a little longer
+    expect(step("delist", U.edit, { externalId: ID }, "saved2")).toMatchObject({ kind: "stop", code: "unexpected_page", keepTab: true });
     document.body.insertAdjacentHTML("beforeend", "<div role='alert'>Price must be at least $3</div>");
     expect(step("delist", U.edit, { externalId: ID }, "saved")).toMatchObject({ kind: "stop", code: "rejected", message: expect.stringContaining("at least $3") });
   });
@@ -150,7 +151,11 @@ describe("updateQuantity / updateListing / createListing", () => {
     expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 1 })).toMatchObject({ kind: "done", result: { alreadyDone: true } });
     step("updateQuantity", U.edit, { externalId: ID, quantity: 0 });
     expect((document.getElementById("avail") as HTMLSelectElement).value).toBe("not_for_sale");
-    expect(step("updateQuantity", U.listing, { externalId: ID, quantity: 3 }, "saved")).toMatchObject({ kind: "done" });
+    // Left the edit page after Update: re-open it and check what Poshmark saved.
+    expect(step("updateQuantity", U.listing, { externalId: ID, quantity: 3 }, "saved")).toEqual({ kind: "goto", page: "edit", phase: "verify" });
+    load("header-in", "edit-select");
+    (document.getElementById("qty") as HTMLInputElement).value = "3";
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 }, "verify")).toMatchObject({ kind: "done", result: { note: expect.stringMatching(/checked/) } });
   });
   it("updateListing changes only the given fields, never the original price", () => {
     load("header-in", "edit-select");
@@ -194,5 +199,106 @@ describe("getSales / getListings", () => {
   });
   it("other marketplaces answer not_supported", () => {
     expect(runStep(document, { action: "delist", marketplace: "depop", payload: {}, phase: "start", url: "https://www.depop.com/" })).toMatchObject({ kind: "stop", code: "not_supported" });
+  });
+});
+
+// The real Edit Listing page (scrubbed from the copy David saved): Vue form, data-vv-name fields, data-et-name buttons, pre-rendered closed modals.
+describe("real Poshmark edit page (scrubbed fixture)", () => {
+  const real = (v: { title?: string; desc?: string; price?: string } = {}) => {
+    load("header-in", "edit-real");
+    const set = (sel: string, val: string) => { (document.querySelector(sel) as HTMLInputElement).value = val; };
+    set('input[data-vv-name="title"]', v.title ?? "Black jeans W32");
+    set('textarea[data-vv-name="description"]', v.desc ?? "Good condition");
+    set('input[data-vv-name="listingPrice"]', v.price ?? "20");
+    set('input[data-vv-name="originalPrice"]', "60");
+  };
+  const val = (sel: string) => (document.querySelector(sel) as HTMLInputElement).value;
+  const openModal = (text: string) => {
+    const m = Array.from(document.querySelectorAll('[data-test="modal-container"]')).find((x) => x.textContent!.includes(text))!;
+    m.classList.add("modal--in");
+  };
+
+  it("the saved page has what we drive, and nothing hidden is misread (closed modals, hidden errors, menus)", () => {
+    real();
+    for (const sel of ['input[data-vv-name="title"]', 'textarea[data-vv-name="description"]', 'input[data-vv-name="listingPrice"]', 'button[data-et-name="update"]',
+      '[data-et-name="delete"]', '[data-et-name="listingEditorAvailabilitySection"] [data-et-name="not_for_sale"]', 'button[data-et-name="one"]', 'button[data-et-name="multiple"]'])
+      expect(document.querySelector(sel), sel).not.toBeNull();
+    expect(document.querySelector('input[data-vv-name*="quantity" i]')).toBeNull(); // Single Item listing: no quantity box at all
+    expect(fx("edit-real")).not.toMatch(/<script|6ad5e74c|davidsells/i); // scrubbed
+    expect(signedIn(document)).toBe(true);
+    expect(step("updateListing", U.edit, { externalId: ID, price: 20 })).toMatchObject({ kind: "done", result: { alreadyDone: true } }); // not "not found", not "error"
+  });
+
+  it("updateListing: sets title / price by their data-vv-name, presses Update, then confirms on a fresh edit page", () => {
+    real();
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25, title: "Black jeans W32 L30" })).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    expect(val('input[data-vv-name="listingPrice"]')).toBe("25");
+    expect(val('input[data-vv-name="originalPrice"]')).toBe("60");
+    expect(val('input[data-vv-name="title"]')).toBe("Black jeans W32 L30");
+    expect(clicked).toEqual(["Update"]);
+    // still on the edit page, no message: wait once more, then stop and leave the tab open
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "saved")).toEqual({ kind: "wait", phase: "saved2", ms: 5000 });
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "saved2")).toMatchObject({ kind: "stop", code: "unexpected_page", keepTab: true });
+    // left the edit page (listing page, closet, anywhere): re-open the edit page and compare
+    expect(step("updateListing", U.listing, { externalId: ID, price: 25 }, "saved")).toEqual({ kind: "goto", page: "edit", phase: "verify" });
+    expect(step("updateListing", U.closet, { externalId: ID, price: 25 }, "saved2")).toEqual({ kind: "goto", page: "edit", phase: "verify" });
+    real({ price: "25", title: "Black jeans W32 L30" });
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25, title: "Black jeans W32 L30" }, "verify")).toMatchObject({ kind: "done", result: { note: expect.stringMatching(/checked/) } });
+    real({ price: "20" });
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "verify")).toMatchObject({ kind: "stop", code: "unexpected_page", message: expect.stringContaining("price") });
+    real({ price: "" });
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "verify")).toEqual({ kind: "wait", phase: "verify2", ms: 1500 }); // still loading
+  });
+
+  it("a modal after Update (e.g. 'Problem Detected') or a shown field error stops with Poshmark's words", () => {
+    real();
+    openModal("Problem Detected");
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "saved")).toMatchObject({ kind: "stop", code: "rejected", keepTab: true, message: expect.stringContaining("Problem Detected") });
+    real();
+    const err = Array.from(document.querySelectorAll<HTMLElement>(".form__error-message")).find((e) => /Invalid Price/.test(e.textContent!))!;
+    err.style.display = "block";
+    expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "saved")).toMatchObject({ kind: "stop", code: "rejected", message: expect.stringContaining("Invalid Price") });
+  });
+
+  it("updateQuantity on a Single Item listing (no quantity box): 1 is already true; more stops and says why; Multi Item uses the box", () => {
+    real();
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 1 })).toMatchObject({ kind: "done", result: { alreadyDone: true, note: expect.stringMatching(/Single Item/) } });
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toMatchObject({ kind: "stop", code: "unexpected_page", message: expect.stringMatching(/Single Item listing.*Multi Item/) });
+    expect(clicked).toEqual([]); // never switches Single -> Multi by itself
+    const one = document.querySelector('button[data-et-name="one"]')!, many = document.querySelector('button[data-et-name="multiple"]')!;
+    one.className = "btn btn--tertiary"; many.className = "btn btn--primary";
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toMatchObject({ kind: "stop", message: expect.stringMatching(/Multi Item listing, but no quantity box/) });
+    many.insertAdjacentHTML("afterend", '<input type="text" data-vv-name="quantity" value="1">');
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    expect(val('input[data-vv-name="quantity"]')).toBe("3");
+    expect(clicked).toEqual(["Update"]);
+  });
+
+  it("Not For Sale: opens the Availability menu, picks not_for_sale, checks it took, presses Update, then checks on a fresh page", () => {
+    real();
+    expect(step("delist", U.edit, { externalId: ID })).toEqual({ kind: "wait", phase: "pick", ms: 800 }); // the hidden "Not For Sale" menu text is not misread
+    expect(step("delist", U.edit, { externalId: ID }, "pick")).toEqual({ kind: "wait", phase: "picked", ms: 700 });
+    expect(clicked.at(-1)).toBe("Not For Sale");
+    expect(step("delist", U.edit, { externalId: ID }, "picked")).toMatchObject({ kind: "stop", code: "unexpected_page" }); // the menu did not change
+    const shown = document.querySelector('[data-et-name="listingEditorAvailabilitySection"] [data-test="dropdown-container"] span')!;
+    shown.textContent = "Not For Sale";
+    clicked = [];
+    expect(step("delist", U.edit, { externalId: ID }, "picked")).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    expect(clicked).toEqual(["Update"]);
+    expect(step("delist", U.edit, { externalId: ID }, "verify")).toMatchObject({ kind: "done", result: { note: expect.stringMatching(/checked/) } });
+    expect(step("delist", U.edit, { externalId: ID })).toMatchObject({ kind: "done", result: { alreadyDone: true } });
+  });
+
+  it("delete: Delete Listing, then Yes in the 'Confirm Delete Listing' modal once it is open; never clicks a closed modal", () => {
+    const D = { externalId: ID, mode: "delete" };
+    real();
+    expect(step("markSold", U.edit, D)).toEqual({ kind: "wait", phase: "del_confirm", ms: 800 });
+    expect(clicked).toEqual(["Delete Listing"]);
+    clicked = [];
+    expect(step("markSold", U.edit, D, "del_confirm")).toMatchObject({ kind: "stop", code: "unexpected_page" }); // modal still closed
+    expect(clicked).toEqual([]);
+    openModal("want to delete this item");
+    expect(step("markSold", U.edit, D, "del_confirm")).toEqual({ kind: "wait", phase: "del_done", ms: 4000 });
+    expect(clicked).toEqual(["Yes"]);
   });
 });

@@ -326,6 +326,8 @@ export interface ExtPollInput {
   marketplaces?: Partial<Record<Marketplace, boolean>>;
   /** Marketplaces the extension can run a job on right now (signed in, not paused locally, under its daily cap, idle). */
   ready?: Marketplace[];
+  /** Of those, marketplaces on a long pacing break: only delist / mark_sold may be handed out there. */
+  urgentOnly?: Marketplace[];
   /** Max jobs to hand out (one per marketplace at most). Default 3. */
   limit?: number;
   now?: Date;

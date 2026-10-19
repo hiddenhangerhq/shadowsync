@@ -29,15 +29,71 @@ export function signedIn(doc: Document): boolean | null {
   if (doc.querySelector('a[href^="/login"], a[href*="/login?"]') || byText(doc, "a, button", /^(log ?in|sign ?up)$/i).length) return false;
   return null;
 }
-const notFound = (doc: Document) => /page (was )?not found|this listing (is )?no longer available|listing not found|we couldn'?t find/i.test(textOf(doc.body));
+// ---- The real Edit Listing page (saved by David, Oct 2026; scrubbed copy in tests/fixtures/poshmark/edit-real.html). A Vue form:
+// fields carry data-vv-name, buttons and menu items carry data-et-name (analytics names, stable across restyles), and every modal is
+// rendered up front, closed, and gets the class "modal--in" when it opens. We key on those attributes, never on layout classes.
+// Quantity: a "Single Item" listing has NO quantity field at all (only the Single/Multi Item buttons); a quantity box exists only
+// for Multi Item listings (not in the saved page, so it is matched loosely and anything odd stops for you).
+const REAL = {
+  title: 'input[data-vv-name="title"]',
+  description: 'textarea[data-vv-name="description"]',
+  price: 'input[data-vv-name="listingPrice"]',
+  quantity: 'input[data-vv-name*="quantity" i], input[name*="quantity" i], input[aria-label*="quantity" i]',
+  qtySection: '[data-et-name="listingEditorQuanititySection"], [data-et-name="listingEditorQuantitySection"]',
+  single: 'button[data-et-name="one"]',
+  multi: 'button[data-et-name="multiple"]',
+  availability: '[data-et-name="listingEditorAvailabilitySection"]',
+  notForSale: '[data-et-name="not_for_sale"]',
+  update: 'button[data-et-name="update"]',
+  del: '[data-et-name="delete"]',
+} as const;
+const q = <T extends Element = HTMLElement>(root: ParentNode, sel: string) => root.querySelector<T>(sel);
+const MODAL = '[data-test="modal-container"]';
+/** The open modal: on the real page the one with "modal--in"; on simpler pages a dialog that is not hidden. */
+const openModal = (doc: Document): HTMLElement | null => {
+  const real = Array.from(doc.querySelectorAll<HTMLElement>(MODAL));
+  if (real.length) return real.find((m) => m.classList.contains("modal--in")) ?? null;
+  return Array.from(doc.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"], .modal')).find((d) => !d.hidden) ?? null;
+};
+/** Page text without closed modals and closed menus (the real page carries "Not For Sale", "Delete" and error texts in them). */
+function pageText(doc: Document): string {
+  if (!doc.body) return "";
+  const c = doc.body.cloneNode(true) as HTMLElement;
+  c.querySelectorAll(`${MODAL}:not(.modal--in), [data-test="modal"]:not(.modal-backdrop--in), [data-test="dropdown_menu_list"]`).forEach((e) => e.remove());
+  return textOf(c);
+}
+const modalSays = (m: HTMLElement) => {
+  const t = textOf(m.querySelector('[data-test="modal-title"]')), b = textOf(m.querySelector('[data-test="modal-body"]')) || textOf(m);
+  return (t && !b.startsWith(t) ? `${t}: ${b}` : b).slice(0, 220);
+};
+/** Current Availability on the real page ("For Sale" / "Not For Sale"), or null when the control is not there. */
+const availabilityNow = (doc: Document) => { const s = q(doc, REAL.availability); return s ? textOf(q(s, '[data-test="dropdown-container"]') ?? s) : null; };
+const num = (v: string) => { const n = Number(v.replace(/[^0-9.]/g, "")); return v.trim() && Number.isFinite(n) ? n : null; };
+
+const notFound = (doc: Document) => /page (was )?not found|this listing (is )?no longer available|listing not found|we couldn'?t find/i.test(pageText(doc));
 const soldBadge = (doc: Document) => byText(doc, '[data-test*="sold" i], .sold-tag, .sold, span, div', /^sold$/i).length > 0;
-const isNotForSale = (doc: Document) => /\bnot for sale\b/i.test(textOf(doc.body));
-const saveButton = (doc: Document) => byText<HTMLElement>(doc, 'button, input[type="submit"], [role="button"]', /^(update|save|save changes|done)$/i)[0]
+const isNotForSale = (doc: Document) => /\bnot for sale\b/i.test(pageText(doc));
+const saveButton = (doc: Document) => q<HTMLElement>(doc, REAL.update) ?? byText<HTMLElement>(doc, 'button, input[type="submit"], [role="button"]', /^(update|save|save changes|done)$/i)[0]
   ?? Array.from(doc.querySelectorAll<HTMLInputElement>('input[type="submit"]')).find((i) => /^(update|save)$/i.test(i.value)) ?? null;
-const formError = (doc: Document) => textOf(doc.querySelector('[role="alert"], .form__error, .error-message, .error'));
+/** A visible form error: the real page keeps its ".form__error-message" lines hidden with display:none until one applies. */
+const formError = (doc: Document) => {
+  const el = Array.from(doc.querySelectorAll<HTMLElement>('[role="alert"], .form__error, .form__error-message, .error-message, .error'))
+    .find((e) => e.style.display !== "none" && !e.hidden && textOf(e));
+  return el ? textOf(el) : "";
+};
 
 /** Set "Availability" to "Not For Sale". Native <select> first, then a custom dropdown (two steps). */
 function setNotForSale(doc: Document, phase: string): StepResult | "already" | null {
+  const section = q(doc, REAL.availability);
+  if (section) {
+    if (phase === "picked") return null; // the caller checks it took, then saves
+    if (/^not for sale$/i.test(availabilityNow(doc) ?? "")) return "already";
+    const opt = q<HTMLElement>(section, REAL.notForSale);
+    if (!opt) return stop("unexpected_page", "Found the Availability menu but no \"Not For Sale\" choice");
+    if (phase !== "pick") { click(q<HTMLElement>(section, '[data-test="dropdown"]') ?? section); return { kind: "wait", phase: "pick", ms: 800 }; }
+    click(opt);
+    return { kind: "wait", phase: "picked", ms: 700 };
+  }
   const sel = Array.from(doc.querySelectorAll<HTMLSelectElement>("select")).find((s) => Array.from(s.options).some((o) => /not for sale/i.test(o.text)));
   if (sel) {
     const opt = Array.from(sel.options).find((o) => /not for sale/i.test(o.text))!;
@@ -68,15 +124,15 @@ const FALLBACK: Record<string, string> = {
   refused: "Poshmark refused the delete",
 };
 const BLOCKED = /\b(active|pending|open) offers?\b|offer (is )?pending|can'?t (be )?delete|cannot (be )?delete|unable to delete|not able to delete|has (an )?(open|pending) order/i;
-const deleteButton = (doc: Document) => byText<HTMLElement>(doc, 'button, a, [role="button"]', /^delete( (this )?listing)?$/i)[0] ?? null;
-const dialog = (doc: Document) => Array.from(doc.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"], .modal')).find((d) => !d.hidden) ?? null;
+const deleteButton = (doc: Document) => q<HTMLElement>(doc, REAL.del) ?? byText<HTMLElement>(doc, 'button, a, [role="button"]', /^delete( (this )?listing)?$/i)[0] ?? null;
+const dialog = openModal;
 const fallbackTo = (code: keyof typeof FALLBACK): StepResult => ({ kind: "goto", page: "edit", phase: `fb-${code}-start` });
 
 function deleteStep(doc: Document, page: Page, phase: string): StepResult {
   if (phase === "del_done") {
     // Gone: Poshmark sends you to your closet/feed, or the listing page no longer exists.
     if (page === "closet" || page === "home" || (page === "listing" && notFound(doc))) return { kind: "done", result: { deleted: true, note: "Deleted on Poshmark" } };
-    if (BLOCKED.test(textOf(doc.body))) return fallbackTo("offer");
+    if (BLOCKED.test(pageText(doc))) return fallbackTo("offer");
     if (page === "edit" && formError(doc)) return fallbackTo("refused");
     return stop("unexpected_page", "Pressed Delete but could not confirm the listing is gone. Please check it.");
   }
@@ -85,7 +141,7 @@ function deleteStep(doc: Document, page: Page, phase: string): StepResult {
     return { kind: "goto", page: "edit", phase: "start" };
   }
   if (page !== "edit") return stop("unexpected_page", `Expected the edit page, got ${page}`);
-  if (BLOCKED.test(textOf(doc.body))) return fallbackTo("offer");
+  if (BLOCKED.test(pageText(doc))) return fallbackTo("offer");
   if (phase === "del_confirm") {
     const d = dialog(doc);
     if (d && BLOCKED.test(textOf(d))) return fallbackTo("offer");
@@ -113,59 +169,118 @@ function endStep(doc: Document, page: Page, phase: string, mode: unknown, note: 
   return mode === "delete" ? deleteStep(doc, page, phase) : availabilityStep(doc, page, phase, note);
 }
 
+/** After pressing Update. A result when we can tell (an open modal, a form error, still on the edit page); null when Poshmark left the
+ * edit page cleanly, in which case the caller re-opens the edit page ("verify") and checks the saved values for itself. */
+function afterUpdate(doc: Document, page: Page, phase: string): StepResult | null {
+  if (page !== "edit") return null;
+  const m = openModal(doc);
+  if (m) return stop("rejected", `Poshmark showed: ${modalSays(m)}`, true);
+  const err = formError(doc);
+  if (err) return stop("rejected", `Poshmark said: ${err.slice(0, 200)}`);
+  if (phase === "saved") return { kind: "wait", phase: "saved2", ms: 5000 };
+  return stop("unexpected_page", "Pressed Update, but Poshmark stayed on the edit page with no message. Please check the tab.", true);
+}
+const SAVED = new Set(["saved", "saved2"]), VERIFY = new Set(["verify", "verify2"]);
+/** Not For Sale on this edit page? true/false, or null when there is no Availability control we know. */
+function editPageNotForSale(doc: Document): boolean | null {
+  const now = availabilityNow(doc);
+  if (now !== null) return /^not for sale$/i.test(now);
+  const sel = Array.from(doc.querySelectorAll<HTMLSelectElement>("select")).find((x) => Array.from(x.options).some((o) => /not for sale/i.test(o.text)));
+  return sel ? /not for sale/i.test(sel.selectedOptions[0]?.text ?? "") : null;
+}
+
 function availabilityStep(doc: Document, page: Page, phase: string, note: string): StepResult {
+  if (SAVED.has(phase)) {
+    const r = afterUpdate(doc, page, phase);
+    if (r) return r;
+    if (page === "listing" && isNotForSale(doc)) return { kind: "done", result: { alreadyDone: false, note } };
+    return { kind: "goto", page: "edit", phase: "verify" };
+  }
   if (page === "listing") {
     if (soldBadge(doc)) return { kind: "done", result: { alreadyDone: true, note: "Already sold on Poshmark" } };
-    if (phase === "saved" || phase === "start") {
-      if (isNotForSale(doc)) return { kind: "done", result: { alreadyDone: phase === "start", note } };
-      if (phase === "saved") return stop("unexpected_page", "Saved, but the listing does not show \"Not For Sale\". Please check it.");
-    }
-    return { kind: "goto", page: "edit", phase: "start" };
+    if (phase === "start" && isNotForSale(doc)) return { kind: "done", result: { alreadyDone: true, note } };
+    return { kind: "goto", page: "edit", phase: VERIFY.has(phase) ? phase : "start" };
   }
   if (page !== "edit") return stop("unexpected_page", `Expected the edit page, got ${page}`);
-  if (phase === "saved") {
-    const err = formError(doc);
-    return err ? stop("rejected", `Poshmark said: ${err.slice(0, 200)}`) : stop("unexpected_page", "Pressed Update but stayed on the edit page");
+  if (VERIFY.has(phase)) {
+    const nfs = editPageNotForSale(doc);
+    if (nfs) return { kind: "done", result: { alreadyDone: false, note: `${note} (checked)` } };
+    if (nfs === null && phase === "verify") return { kind: "wait", phase: "verify2", ms: 1500 };
+    return stop("unexpected_page", "Pressed Update, but the listing does not show \"Not For Sale\". Please check it.", true);
   }
   const r = setNotForSale(doc, phase);
-  if (r === "already") return { kind: "done", result: { alreadyDone: true, note: "Already Not For Sale" } };
+  if (r === "already") return { kind: "done", result: { alreadyDone: phase === "start", note: phase === "start" ? "Already Not For Sale" : note } };
   if (r) return r;
+  if (phase === "picked" && editPageNotForSale(doc) === false) return stop("unexpected_page", "Picked \"Not For Sale\" but the Availability setting did not change", true);
   const save = saveButton(doc);
   if (!save) return stop("unexpected_page", "Could not find the Update button");
   click(save);
   return { kind: "wait", phase: "saved", ms: 5000 };
 }
 
+const isPrice = (el: Element) => /price/i.test(`${el.getAttribute("data-vv-name") ?? ""} ${el.getAttribute("aria-label") ?? ""} ${el.getAttribute("name") ?? ""} ${el.id}`);
+function sameValue(el: HTMLInputElement | HTMLTextAreaElement, v: unknown): boolean {
+  const s = String(v);
+  if (isPrice(el) || el.type === "number" || /quantity|qty/i.test(el.getAttribute("data-vv-name") ?? el.name ?? "")) { const a = num(el.value), b = num(s); if (a !== null && b !== null) return a === b; }
+  return norm(el.value) === norm(s);
+}
 function setIfDifferent(el: HTMLInputElement | HTMLTextAreaElement | null, v: unknown): "missing" | "same" | "changed" {
   if (v === undefined || v === null) return "same";
   if (!el) return "missing";
   const s = String(v);
-  if (norm(el.value) === norm(s)) return "same";
+  if (sameValue(el, v)) return "same";
   setValue(el, s);
   return "changed";
 }
-const priceField = (doc: Document) =>
+const priceField = (doc: Document) => q<HTMLInputElement>(doc, REAL.price) ??
   field(doc, "input", /listing price/i) ?? Array.from(doc.querySelectorAll<HTMLInputElement>("input")).find((i) => {
     const hay = `${i.name} ${i.id} ${i.getAttribute("aria-label") ?? ""} ${i.placeholder}`;
     return /price/i.test(hay) && !/original/i.test(hay);
   }) ?? null;
 
-function editFieldsStep(doc: Document, page: Page, phase: string, p: Record<string, unknown>, quantityOnly: boolean): StepResult {
-  if (phase === "saved") {
-    if (page === "listing") return { kind: "done", result: { note: "Saved" } };
-    const err = page === "edit" ? formError(doc) : "";
-    return err ? stop("rejected", `Poshmark said: ${err.slice(0, 200)}`) : stop("unexpected_page", "Could not confirm the change was saved");
-  }
-  if (page === "listing") return { kind: "goto", page: "edit", phase: "start" };
-  if (page !== "edit") return stop("unexpected_page", `Expected the edit page, got ${page}`);
-  const results = quantityOnly
-    ? [setIfDifferent(field(doc, "input", /quantity|qty/i), p.quantity)]
+type Quantity = { el: HTMLInputElement | null; single: boolean; multi: boolean };
+/** The quantity box, and whether this is a Single Item listing (which has no quantity box at all on Poshmark). */
+function quantityOf(doc: Document): Quantity {
+  const el = q<HTMLInputElement>(doc, REAL.quantity) ?? field(doc, "input", /quantity|qty/i);
+  const sec = q(doc, REAL.qtySection);
+  const one = sec ? q(sec, REAL.single) : null, many = sec ? q(sec, REAL.multi) : null;
+  const picked = (b: Element | null) => !!b && /\bbtn--primary\b/.test(b.className); // the chosen button is the filled one
+  const multi = !!many && picked(many) && !picked(one);
+  return { el, single: !el && !!one && !multi, multi };
+}
+function editFields(doc: Document, p: Record<string, unknown>, quantityOnly: boolean) {
+  return quantityOnly
+    ? [{ name: "quantity", el: quantityOf(doc).el, want: p.quantity }]
     : [
-        setIfDifferent(field(doc, "input", /title|what are you selling/i), p.title),
-        setIfDifferent(field<HTMLTextAreaElement>(doc, "textarea", /descri/i), p.description),
-        setIfDifferent(priceField(doc), p.price),
-      ];
-  if (results.includes("missing")) return stop("unexpected_page", "Could not find a field to change on the edit page");
+        { name: "title", el: q<HTMLInputElement>(doc, REAL.title) ?? field(doc, "input", /title|what are you selling/i), want: p.title },
+        { name: "description", el: q<HTMLTextAreaElement>(doc, REAL.description) ?? field<HTMLTextAreaElement>(doc, "textarea", /descri/i), want: p.description },
+        { name: "price", el: priceField(doc), want: p.price },
+      ].filter((f) => f.want !== undefined && f.want !== null);
+}
+
+function editFieldsStep(doc: Document, page: Page, phase: string, p: Record<string, unknown>, quantityOnly: boolean): StepResult {
+  if (SAVED.has(phase)) return afterUpdate(doc, page, phase) ?? { kind: "goto", page: "edit", phase: "verify" };
+  if (page === "listing") return { kind: "goto", page: "edit", phase: VERIFY.has(phase) ? phase : "start" };
+  if (page !== "edit") return stop("unexpected_page", `Expected the edit page, got ${page}`);
+  if (quantityOnly && !VERIFY.has(phase)) {
+    const qty = quantityOf(doc), want = Number(p.quantity);
+    if (!qty.el && qty.single) {
+      if (want === 1) return { kind: "done", result: { alreadyDone: true, note: "Single Item listing: quantity is already 1" } };
+      return stop("unexpected_page", `This is a Single Item listing on Poshmark, so it has no quantity box. To sell ${want}, open it on Poshmark, choose Multi Item and set the quantity for each size (Shadow Sync won't switch that by itself).`);
+    }
+    if (!qty.el) return stop("unexpected_page", qty.multi ? "Multi Item listing, but no quantity box was found on the edit page" : "Could not find the quantity setting on the edit page");
+  }
+  const fields = editFields(doc, p, quantityOnly);
+  if (VERIFY.has(phase)) {
+    // A fresh edit page shows what Poshmark saved. Empty boxes usually mean it has not finished loading: look once more.
+    if (phase === "verify" && fields.some((f) => !f.el || !f.el.value)) return { kind: "wait", phase: "verify2", ms: 1500 };
+    const off = fields.filter((f) => !f.el || !sameValue(f.el, f.want)).map((f) => f.name);
+    if (!off.length) return { kind: "done", result: { note: "Saved (checked on a fresh edit page)" } };
+    return stop("unexpected_page", `Pressed Update, but Poshmark still shows a different ${off.join(", ")}. Please check it.`, true);
+  }
+  const missing = fields.filter((f) => !f.el).map((f) => f.name);
+  if (missing.length) return stop("unexpected_page", `Could not find the ${missing.join(", ")} field on the edit page`);
+  const results = fields.map((f) => setIfDifferent(f.el, f.want));
   if (!results.includes("changed")) return { kind: "done", result: { alreadyDone: true, note: "Nothing to change" } };
   const save = saveButton(doc);
   if (!save) return stop("unexpected_page", "Could not find the Update button");

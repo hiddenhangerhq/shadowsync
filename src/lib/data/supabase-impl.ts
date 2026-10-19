@@ -69,6 +69,8 @@ const raise6 = (e: { message: string; code?: string }): never => {
   }
   throw new Error(friendly(e));
 };
+/** 0007 (ext_poll_v2) not applied yet: remember for a while instead of asking every poll. */
+let pollV2Missing = 0;
 const must6 = <T,>(r: { data: T | null; error: { message: string; code?: string } | null }): T => {
   if (r.error) raise6(r.error);
   return r.data as T;
@@ -482,9 +484,19 @@ function createDeviceGateway(): DeviceGateway {
       return { deviceId: r.device_id as string, label: r.label as string };
     },
     async poll(token, input) {
-      const r = await rpc<Row>("ext_poll", {
-        p_token: token, p_version: input.extensionVersion, p_states: input.marketplaces ?? {}, p_ready: input.ready ?? [], p_limit: input.limit ?? 3,
-      });
+      const base = { p_token: token, p_version: input.extensionVersion, p_states: input.marketplaces ?? {}, p_ready: input.ready ?? [], p_limit: input.limit ?? 3 };
+      const urgent = input.urgentOnly ?? [];
+      let r: Row;
+      if (!urgent.length || pollV2Missing > Date.now()) {
+        // Without 0007, a marketplace on a long break is simply left out (delists wait for the break; at most 8 minutes).
+        r = await rpc<Row>("ext_poll", urgent.length ? { ...base, p_ready: base.p_ready.filter((m) => !urgent.includes(m)) } : base);
+      } else {
+        const v2 = await anon.rpc("ext_poll_v2", { ...base, p_urgent: urgent });
+        if (v2.error && (v2.error.code === "PGRST202" || /ext_poll_v2/.test(v2.error.message) && /not find|does not exist/i.test(v2.error.message))) {
+          pollV2Missing = Date.now() + 5 * 60_000;
+          r = await rpc<Row>("ext_poll", { ...base, p_ready: base.p_ready.filter((m) => !urgent.includes(m)) });
+        } else r = must6(v2) as Row;
+      }
       const dev = r.device as Row;
       return {
         device: { id: dev.id as string, label: dev.label as string, paused: !!dev.paused },

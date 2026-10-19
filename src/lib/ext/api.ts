@@ -83,7 +83,7 @@ export const extPoll = (svc: Services, token: string | null, body: unknown, ip: 
   device(token, ip, async (t) => {
     const b = parse(pollSchema, body);
     if (Date.now() - lastUpkeep >= UPKEEP_EVERY_MS) { lastUpkeep = Date.now(); await svc.store.worker.run().catch(() => undefined); }
-    const r = await svc.device.poll(t, { extensionVersion: b.extensionVersion, marketplaces: b.marketplaces, ready: b.ready, limit: b.limit });
+    const r = await svc.device.poll(t, { extensionVersion: b.extensionVersion, marketplaces: b.marketplaces, ready: b.ready, limit: b.limit, urgentOnly: b.urgentOnly });
     const actions: (ActionRequest & { leaseExpiresAt: string | null; attempt: number })[] = [];
     for (const c of r.jobs) {
       const a = buildActionRequest(c.job, { listing: c.listing, item: c.item, soldAction: c.soldAction, saleConfirmed: c.saleConfirmed });

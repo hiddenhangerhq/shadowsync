@@ -40,6 +40,9 @@ export function parseExternal(msg: unknown, sender: Sender, cfg: HandlerConfig):
   return { ok: true, req: { type: "status" } };
 }
 
+/** Our site's Connect page, told this extension's id so it can message us back (only that origin can: externally_connectable). */
+export const pairingPageUrl = (apiOrigin: string, extensionId: string) => `${apiOrigin}/settings/extension?ext=${encodeURIComponent(extensionId)}`;
+
 // ---------------------------------------------------------------- popup -> background
 const internalSchema = obj({
   type: oneOf(["state", "pollNow", "scanNow", "pair", "unpair", "pauseDevice", "pauseMarketplace", "connected", "checkLogin"] as const),
