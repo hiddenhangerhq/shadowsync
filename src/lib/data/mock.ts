@@ -95,6 +95,20 @@ function seedDemo(db: MockDb, userId: string) {
     mk({ title: "Demo: Under Armour 1/4 zip", status: "listed", sku: "D-1005", cogs: 3, askingPrice: 18, platform: "depop", dateListed: d(3) }),
     mk({ title: "Demo: Banana Republic pants", status: "sold", sku: "D-1006", cogs: 6, priceSold: 30, fees: 6, shipCost: 0, shipProvider: "Poshmark", platform: "poshmark", dateListed: d(20), dateSold: d(2) }),
   );
+  const sale = (it: Item, o: Partial<Sale>): Sale => ({
+    id: randomUUID(), userId, itemId: it.id, marketplace: (it.platform ?? "other") as Sale["marketplace"], orderId: null,
+    soldAt: d(1), price: it.priceSold ?? 0, fees: null, promo: null, shipProvider: null, shipCost: null,
+    sku: it.sku, title: it.title, shipBy: null, shippedAt: null, source: "manual", createdAt: now(), ...o,
+  });
+  const sold = db.t.items.find((x) => x.sku === "D-1006")!;
+  const e1 = mk({ title: "Demo: Nike Tech fleece, L", status: "sold", sku: "D-1007", cogs: 8, priceSold: 42, platform: "ebay", dateSold: d(1) });
+  const e2 = mk({ title: "Demo: Lululemon shorts, 8", status: "sold", sku: "D-1008", cogs: 5, priceSold: 26, platform: "depop", dateSold: d(0) });
+  db.t.items.push(e1, e2);
+  db.t.sales.push(
+    sale(sold, { orderId: "P-3001", soldAt: d(2), shippedAt: d(1) }),
+    sale(e1, { orderId: "13-00001-00001", shipBy: d(-1) }),
+    sale(e2, { orderId: "DP-5521", soldAt: d(0), shipBy: d(-3) }),
+  );
 }
 
 function makeStore(db: MockDb, auth: AuthService): DataStore {
@@ -207,11 +221,24 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
           ? db.t.sales.find((x) => x.userId === userId && x.marketplace === input.marketplace && x.orderId === input.orderId)
           : undefined;
         if (dup) {
-          if (SOURCE_PRIORITY[input.source] > SOURCE_PRIORITY[dup.source]) Object.assign(dup, input);
+          if (SOURCE_PRIORITY[input.source] > SOURCE_PRIORITY[dup.source]) Object.assign(dup, Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined)));
+          else for (const k of ["sku", "title", "shipBy"] as const) if (!dup[k] && input[k]) dup[k] = input[k]!; // lower source may only fill blanks
           return commit({ ...dup });
         }
-        const s: Sale = { id: randomUUID(), userId, createdAt: now(), ...input };
+        const s: Sale = { id: randomUUID(), userId, createdAt: now(), sku: null, title: null, shipBy: null, shippedAt: null, ...input };
         db.t.sales.push(s);
+        return commit({ ...s });
+      },
+      async listToShip() {
+        const r = (await mine(db.t.sales)).filter((s) => !s.shippedAt);
+        r.sort((a, b) => (a.shipBy ?? "9999-99-99").localeCompare(b.shipBy ?? "9999-99-99") || b.soldAt.localeCompare(a.soldAt));
+        return r.map((s) => ({ ...s }));
+      },
+      async markShipped(id, on, day) {
+        const userId = await uid();
+        const s = db.t.sales.find((x) => x.id === id && x.userId === userId);
+        if (!s) throw new Error("Sale not found");
+        s.shippedAt = on ? day ?? new Date().toISOString().slice(0, 10) : null;
         return commit({ ...s });
       },
     },

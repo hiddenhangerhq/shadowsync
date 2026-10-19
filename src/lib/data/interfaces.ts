@@ -16,7 +16,8 @@ export interface CookieJar {
 }
 
 export interface AuthService {
-  signUp(email: string, password: string): Promise<{ user: AuthUser | null; error?: string }>;
+  /** `needsConfirmation`: account created (or already exists) but no session until the emailed link is clicked (Supabase email confirmation ON). */
+  signUp(email: string, password: string): Promise<{ user: AuthUser | null; error?: string; needsConfirmation?: boolean }>;
   signIn(email: string, password: string): Promise<{ user: AuthUser | null; error?: string }>;
   signOut(): Promise<void>;
   /** Current user from the session cookie, or null. */
@@ -62,6 +63,10 @@ export interface DataStore {
      * higher-trust source (api > extension > manual > sheet-import > email) replaces a lower one's data.
      */
     record(input: NewSale): Promise<Sale>;
+    /** Sales not yet shipped (shippedAt is null), earliest ship-by first (no deadline last). */
+    listToShip(): Promise<Sale[]>;
+    /** Mark shipped (today, or the given YYYY-MM-DD) or undo with on=false. */
+    markShipped(id: string, on: boolean, day?: string): Promise<Sale>;
   };
   connections: {
     list(): Promise<MarketplaceConnection[]>;

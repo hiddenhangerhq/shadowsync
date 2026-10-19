@@ -10,6 +10,7 @@ export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
       <div className="brand" style={{ fontSize: "1.6rem", marginBottom: 16 }}>Shadow<b>Sync</b></div>
       <form action={action} className="card glow">
         <h1>{mode === "login" ? "Sign in" : "Create account"}</h1>
+        {state?.notice && <p className="muted" role="status">{state.notice}</p>}
         {state?.error && <p className="err" role="alert">{state.error}</p>}
         <label className="f">Email<input className="input" name="email" type="email" autoComplete="email" required /></label>
         <label className="f">Password

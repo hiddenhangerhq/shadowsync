@@ -8,8 +8,8 @@ export const dynamic = "force-dynamic";
 export default async function MissionControl() {
   const { store } = await getServices();
   const balance = await store.creditLedger.ensureMonthlyAllowance();
-  const [counts, recent, profile, log] = await Promise.all([
-    store.items.countsByStatus(), store.items.list({ limit: 4 }), store.profile.get(), store.syncLog.recent(3),
+  const [counts, recent, profile, log, toShip] = await Promise.all([
+    store.items.countsByStatus(), store.items.list({ limit: 4 }), store.profile.get(), store.syncLog.recent(3), store.sales.listToShip(),
   ]);
   const stat = (href: string, n: number, l: string) => (
     <Link href={href} className="stat"><div className="n">{n}</div><div className="l">{l}</div></Link>
@@ -33,6 +33,7 @@ export default async function MissionControl() {
 
       <div className="row" style={{ marginBottom: 12, flexWrap: "wrap" }}>
         <Link href="/items/new" className="btn primary">📷 Add item</Link>
+        <Link href="/ship" className="btn">🚚 Ship<span className="badge-count">{toShip.length}</span></Link>
         <Link href="/items" className="btn">All items</Link>
       </div>
 
@@ -53,7 +54,7 @@ export default async function MissionControl() {
       </div>
 
       <div className="grid c2">
-        <div className="banner"><b>Ship / Offers / Share</b><br />Coming in a later step.</div>
+        <div className="banner"><b>Offers / Share</b><br />Coming in a later step.</div>
         <div className="card" style={{ margin: 0 }}>
           <h3>Sync log</h3>
           {log.length === 0 ? <span className="muted small">No sync activity yet.</span> : log.map((l) => <div key={l.id} className="small">{l.event}</div>)}

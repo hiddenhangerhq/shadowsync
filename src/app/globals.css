@@ -157,3 +157,5 @@ label.f .input{margin-top:4px}
 @media (min-width:700px){.grid.c3{grid-template-columns:repeat(3,1fr)}.photos{grid-template-columns:repeat(5,1fr)}.swatch-grid{grid-template-columns:repeat(4,1fr)}}
 .navlink{white-space:nowrap}
 @media (max-width:520px){.nav .brand{display:none}.nav-in{padding:8px 8px;gap:4px}.navlink{padding:8px 10px;font-size:.86rem}.nav-in .navlink:last-child{margin-left:auto}}
+.sku{font-family:var(--font-head);font-weight:800;color:var(--accent);letter-spacing:.04em}
+.late{color:var(--danger);font-weight:700} .soon{color:var(--warn);font-weight:700}

@@ -1,5 +1,5 @@
 // Supabase implementation. THE ONLY FILE IN THE APP THAT IMPORTS @supabase/*.
-// Not exercised by tests yet (needs a real project); DATA_BACKEND=supabase selects it.
+// Exercised by the shared contract suite with RUN_SUPABASE=1 (see tests/helpers.ts). DATA_BACKEND=supabase selects it.
 import { createServerClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
@@ -41,8 +41,13 @@ function client(jar: CookieJar): SupabaseClient {
   }) as unknown as SupabaseClient;
 }
 
-const must = <T,>(r: { data: T | null; error: { message: string } | null }): T => {
-  if (r.error) throw new Error(r.error.message);
+// Postgres errors -> the same messages the mock implementation gives (callers/tests match on these).
+function friendly(e: { message: string; code?: string }): string {
+  if (e.code === "23505" && /items_user_sku_uq/.test(e.message)) return "That SKU already exists";
+  return e.message;
+}
+const must = <T,>(r: { data: T | null; error: { message: string; code?: string } | null }): T => {
+  if (r.error) throw new Error(friendly(r.error));
   return r.data as T;
 };
 
@@ -53,7 +58,10 @@ export function createSupabaseServices(jar: CookieJar): Services {
   const auth: AuthService = {
     async signUp(email, password) {
       const { data, error } = await sb.auth.signUp({ email, password });
-      return { user: data.user?.email ? { id: data.user.id, email: data.user.email } : null, error: error?.message };
+      if (error) return { user: null, error: error.message };
+      // With email confirmation ON there is no session yet: do not report the user as signed in.
+      if (!data.session) return { user: null, needsConfirmation: true };
+      return { user: data.user?.email ? { id: data.user.id, email: data.user.email } : null };
     },
     async signIn(email, password) {
       const { data, error } = await sb.auth.signInWithPassword({ email, password });
@@ -73,6 +81,8 @@ export function createSupabaseServices(jar: CookieJar): Services {
   };
   // RLS already restricts every query to auth.uid(); user_id is only set on insert.
   const list = async <T,>(table: string, build?: (q: any) => any): Promise<T[]> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    // RLS would just return no rows when signed out; fail loudly instead (same as the mock). Local session check, no network call.
+    if (!(await sb.auth.getSession()).data.session) throw new Error("Not signed in");
     const q = sb.from(table).select("*");
     const rows = must(await (build ? build(q) : q)) as Row[];
     return rows.map((r) => fromRow<T>(r));
@@ -146,11 +156,24 @@ export function createSupabaseServices(jar: CookieJar): Services {
           const ex = must(await sb.from("sales").select("*").eq("marketplace", s.marketplace).eq("order_id", s.orderId).maybeSingle()) as Row | null;
           if (ex) {
             const cur = fromRow<import("./types").Sale>(ex);
-            if (SOURCE_PRIORITY[s.source] <= SOURCE_PRIORITY[cur.source]) return cur;
+            if (SOURCE_PRIORITY[s.source] <= SOURCE_PRIORITY[cur.source]) {
+              // lower-trust source may only fill blank ship fields
+              const fill: Row = {};
+              if (!cur.sku && s.sku) fill.sku = s.sku;
+              if (!cur.title && s.title) fill.title = s.title;
+              if (!cur.shipBy && s.shipBy) fill.ship_by = s.shipBy;
+              if (!Object.keys(fill).length) return cur;
+              return fromRow(must(await sb.from("sales").update(fill).eq("id", cur.id).select().single()) as Row);
+            }
             return fromRow(must(await sb.from("sales").update(toRow(s)).eq("id", cur.id).select().single()) as Row);
           }
         }
         return insert("sales", s);
+      },
+      listToShip: () => list("sales", (q) => q.is("shipped_at", null).order("ship_by", { ascending: true, nullsFirst: false }).order("sold_at", { ascending: false })),
+      async markShipped(id, on, day) {
+        const shippedAt = on ? day ?? new Date().toISOString().slice(0, 10) : null;
+        return fromRow(must(await sb.from("sales").update({ shipped_at: shippedAt }).eq("id", id).select().single()) as Row);
       },
     },
     connections: {

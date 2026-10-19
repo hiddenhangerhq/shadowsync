@@ -2,17 +2,15 @@ import { describe, expect, it } from "vitest";
 import { backends } from "./helpers";
 import { CREDIT_COSTS, InsufficientCreditsError, PLAN_ALLOWANCE } from "../src/lib/data/types";
 
-describe.each(backends)("data layer contract: $name", ({ make }) => {
-  const signedIn = async (email = "david@example.com") => {
+describe.each(backends)("data layer contract: $name", (b) => {
+  const { make } = b;
+  const signedIn = async (idx: 0 | 1 = 0) => make().user(idx);
+
+  // Mock only: the real project has email confirmation ON, so signup can't yield a session. See supabase.test.ts.
+  it.runIf(b.name === "mock")("auth: signup, signout, wrong password, signin", async () => {
     const { client } = make();
     const s = client();
-    const r = await s.auth.signUp(email, "correct horse");
-    expect(r.user?.email).toBe(email);
-    return s;
-  };
-
-  it("auth: signup, signout, wrong password, signin", async () => {
-    const s = await signedIn();
+    expect((await s.auth.signUp("david@example.com", "correct horse")).user?.email).toBe("david@example.com");
     expect((await s.auth.getUser())?.email).toBe("david@example.com");
     await s.auth.signOut();
     expect(await s.auth.getUser()).toBeNull();
@@ -26,12 +24,13 @@ describe.each(backends)("data layer contract: $name", ({ make }) => {
   it("store rejects calls when signed out", async () => {
     const { client } = make();
     await expect(client().store.items.list()).rejects.toThrow(/signed in/i);
+    await expect(client().store.items.create({ title: "x" })).rejects.toThrow();
   });
 
   it("profile defaults and theme persistence", async () => {
     const s = await signedIn();
     const p = await s.store.profile.get();
-    expect(p).toMatchObject({ email: "david@example.com", plan: "free", theme: "system" });
+    expect(p).toMatchObject({ email: (await s.auth.getUser())?.email, plan: "free", theme: "system" });
     for (const theme of ["light", "dark", "cyberpunk", "retro", "midnight", "forest", "sunset", "system"] as const) {
       expect((await s.store.profile.update({ theme })).theme).toBe(theme);
       expect((await s.store.profile.get())?.theme).toBe(theme);
@@ -54,9 +53,10 @@ describe.each(backends)("data layer contract: $name", ({ make }) => {
   });
 
   it("photos + storage: add, order, cover, remove; cascade on item delete", async () => {
-    const { store, storage } = await signedIn();
+    const { store, storage, auth } = await signedIn();
+    const me = (await auth.getUser())!.id; // storage policy: first path folder must be the user's id
     const it1 = await store.items.create({ title: "Jacket" });
-    const path = (n: number) => `u/${it1.id}/${n}.jpg`;
+    const path = (n: number) => `${me}/${it1.id}/${n}.jpg`;
     for (let n = 0; n < 3; n++) {
       await storage.upload(path(n), new Uint8Array([n]), "image/jpeg");
       await store.photos.add({ itemId: it1.id, path: path(n), position: n, width: 10, height: 10, bytes: 1 });
@@ -70,6 +70,7 @@ describe.each(backends)("data layer contract: $name", ({ make }) => {
     await store.items.remove(it1.id);
     expect(await store.photos.listForItem(it1.id)).toEqual([]);
     await expect(store.photos.add({ itemId: "nope", path: "x", position: 0, width: null, height: null, bytes: null })).rejects.toThrow();
+    await storage.remove([path(0), path(1), path(2)]);
   });
 
   it("listings, sales, connections, sync log", async () => {
@@ -117,7 +118,8 @@ await store.syncLog.append({ marketplace: "ebay", itemId: it1.id, source: "api",
 
   it("credits: monthly allowance is idempotent, spend is checked, month rollover resets", async () => {
     const { store } = await signedIn();
-    const oct = new Date("2026-10-10T12:00:00Z");
+    const y = b.creditYear; // random per run on a real project (users can't delete ledger rows)
+    const oct = new Date(`${y}-10-10T12:00:00Z`);
     expect(await store.creditLedger.ensureMonthlyAllowance(oct)).toBe(PLAN_ALLOWANCE.free);
     expect(await store.creditLedger.ensureMonthlyAllowance(oct)).toBe(PLAN_ALLOWANCE.free);
     expect(await store.creditLedger.spend("listing_create")).toBe(PLAN_ALLOWANCE.free - CREDIT_COSTS.listing_create);
@@ -126,31 +128,31 @@ await store.syncLog.append({ marketplace: "ebay", itemId: it1.id, source: "api",
     await expect(store.creditLedger.spend("description", 9999)).rejects.toBeInstanceOf(InsufficientCreditsError);
     await expect(store.creditLedger.spend("description", 0)).rejects.toThrow();
     expect(await store.creditLedger.balance()).toBe(PLAN_ALLOWANCE.free - 5);
-    expect(await store.creditLedger.ensureMonthlyAllowance(new Date("2026-11-01T08:00:00Z"))).toBe(PLAN_ALLOWANCE.free);
-    expect(await store.creditLedger.grant(10, "bonus")).toBe(PLAN_ALLOWANCE.free + 10);
-    const e = await store.creditLedger.entries();
-    expect(e.map((x) => x.kind).sort()).toEqual(["grant", "reset", "reset", "spend", "spend"]);
+    expect(await store.creditLedger.ensureMonthlyAllowance(new Date(`${y}-11-01T08:00:00Z`))).toBe(PLAN_ALLOWANCE.free);
+    if (b.canGrant) expect(await store.creditLedger.grant(10, "bonus")).toBe(PLAN_ALLOWANCE.free + 10);
+    else await expect(store.creditLedger.grant(10, "bonus")).rejects.toThrow(); // users can never write the ledger
+    const e = await store.creditLedger.entries(b.canGrant ? 5 : 4);
+    expect(e.map((x) => x.kind).sort()).toEqual(b.canGrant ? ["grant", "reset", "reset", "spend", "spend"] : ["reset", "reset", "spend", "spend"]);
   });
 
   it("isolation: user B cannot see or touch user A's rows", async () => {
-    const { client } = make();
-    const a = client(), b = client();
-    await a.auth.signUp("a@x.com", "password-a1");
-    await b.auth.signUp("b@x.com", "password-b1");
+    const env = make();
+    const a = await env.user(0), bb = await env.user(1);
+    const bBalanceBefore = await bb.store.creditLedger.balance();
     const it1 = await a.store.items.create({ title: "A's item", sku: "S1" });
     await a.store.photos.add({ itemId: it1.id, path: "p", position: 0, width: null, height: null, bytes: null });
     await a.store.sales.record({ itemId: it1.id, marketplace: "ebay", orderId: "o", soldAt: "2026-10-01", price: 1, fees: null, promo: null, shipProvider: null, shipCost: null, source: "manual" });
     await a.store.creditLedger.ensureMonthlyAllowance();
-    expect(await b.store.items.list()).toEqual([]);
-    expect(await b.store.items.get(it1.id)).toBeNull();
-    await expect(b.store.items.update(it1.id, { title: "hacked" })).rejects.toThrow();
-    expect(await b.store.photos.listForItem(it1.id)).toEqual([]);
-    await expect(b.store.photos.add({ itemId: it1.id, path: "q", position: 0, width: null, height: null, bytes: null })).rejects.toThrow();
-    expect(await b.store.sales.list()).toEqual([]);
-    expect(await b.store.creditLedger.balance()).toBe(0);
-    expect((await b.store.profile.get())?.email).toBe("b@x.com");
-    await b.store.items.remove(it1.id); // silently a no-op for foreign rows
+    expect(await bb.store.items.list()).toEqual([]);
+    expect(await bb.store.items.get(it1.id)).toBeNull();
+    await expect(bb.store.items.update(it1.id, { title: "hacked" })).rejects.toThrow();
+    expect(await bb.store.photos.listForItem(it1.id)).toEqual([]);
+    await expect(bb.store.photos.add({ itemId: it1.id, path: "q", position: 0, width: null, height: null, bytes: null })).rejects.toThrow();
+    expect(await bb.store.sales.list()).toEqual([]);
+    expect(await bb.store.creditLedger.balance()).toBe(bBalanceBefore);
+    expect((await bb.store.profile.get())?.email).toBe((await bb.auth.getUser())?.email);
+    await bb.store.items.remove(it1.id); // silently a no-op for foreign rows
     expect(await a.store.items.get(it1.id)).not.toBeNull();
-    expect((await b.store.items.create({ title: "B", sku: "S1" })).sku).toBe("S1"); // SKU unique per user, not global
+    expect((await bb.store.items.create({ title: "B", sku: "S1" })).sku).toBe("S1"); // SKU unique per user, not global
   });
 });

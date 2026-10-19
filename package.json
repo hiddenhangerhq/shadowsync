@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:supabase": "RUN_SUPABASE=1 vitest run"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
@@ -22,5 +23,8 @@
     "@types/react-dom": "^19.3.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.12"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

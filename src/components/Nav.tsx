@@ -10,7 +10,7 @@ const links = [
 
 export default function Nav() {
   const path = usePathname();
-  const on = (href: string) => (href === "/" ? path === "/" : path === href || path.startsWith(href + "/"));
+  const on = (href: string) => (href === "/" ? path === "/" || path === "/ship" || path.startsWith("/ship/") : path === href || path.startsWith(href + "/"));
   return (
     <header className="nav">
       <div className="nav-in">

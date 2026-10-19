@@ -126,10 +126,16 @@ export interface Sale {
   promo: number | null;
   shipProvider: string | null;
   shipCost: number | null;
+  /** SKU of the item sold (shown next to the order in Ship). Falls back to the linked item's SKU in the UI. */
+  sku: string | null;
+  title: string | null;            // item title as the marketplace reported it
+  shipBy: string | null;           // YYYY-MM-DD ship-by deadline, when the marketplace gives one
+  shippedAt: string | null;        // YYYY-MM-DD; null = still to ship
   source: Source;                  // how this sale was detected
   createdAt: string;
 }
-export type NewSale = Omit<Sale, "id" | "userId" | "createdAt">;
+export type NewSale = Omit<Sale, "id" | "userId" | "createdAt" | "sku" | "title" | "shipBy" | "shippedAt"> &
+  Partial<Pick<Sale, "sku" | "title" | "shipBy" | "shippedAt">>;
 
 export interface MarketplaceConnection {
   id: string;
