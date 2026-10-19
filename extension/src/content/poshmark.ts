@@ -5,24 +5,28 @@
 // and needs David's manual smoke test with one test item before it is turned on (release-checklist.md).
 import type { StepInput, StepResult } from "../steps";
 import { stop } from "../steps";
-import { byText, click, field, isoDay, money, norm, securityCheck, setValue, textOf } from "./dom";
+import { byText, click, field, isoDay, money, norm, securityCheck, setValue, textOf, typeValue } from "./dom";
 import type { ExtScanSale } from "../../../src/lib/data/types";
 
 type Page = "login" | "listing" | "edit" | "create" | "sales" | "closet" | "home" | "other";
 export function pageOf(url: string): Page {
-  let p: string;
-  try { p = new URL(url).pathname; } catch { return "other"; }
+  let p: string, qs: URLSearchParams;
+  try { const u = new URL(url); p = u.pathname.replace(/\/+$/, "") || "/"; qs = u.searchParams; } catch { return "other"; }
   if (/^\/(login|signup)(\/|$)/.test(p)) return "login";
   if (/^\/edit-listing\//.test(p)) return "edit";
   if (/^\/listing\//.test(p)) return "listing";
   if (/^\/create-listing(\/|$)/.test(p)) return "create";
-  if (/^\/order\/sales(\/|$)/.test(p)) return "sales";
+  // My Sales: /order/sales (and any redirect variant: /order/sales?..., /my-sales, /account/sales, /sales). The closet's sold view
+  // (/closet/<you>?availability=sold_out) counts as the sales page too, but carries no order links, so it simply reports none.
+  if (/^\/(order\/sales|sales|my-?sales|account\/sales|order\/my-?sales)(\/|$)/i.test(p)) return "sales";
+  if (/^\/closet\//.test(p) && /^sold/i.test(qs.get("availability") ?? "")) return "sales";
   if (/^\/closet\//.test(p)) return "closet";
   if (p === "/" || /^\/feed(\/|$)/.test(p)) return "home";
   return "other";
 }
 
 /** Signed in (true), signed out (false) or can't tell (null), from the page header. */
+const pathOf = (url: string) => { try { return new URL(url).pathname.slice(0, 80); } catch { return "an unknown page"; } };
 export function signedIn(doc: Document): boolean | null {
   if (doc.querySelector('a[href*="logout"], a[href^="/user/account"], a[href="/news"]')
       || byText(doc, 'a, button, [role="menuitem"]', /^(my closet|my likes|log ?out|sign ?out|account settings|my sales)$/i).length) return true;
@@ -37,7 +41,9 @@ export function signedIn(doc: Document): boolean | null {
 const REAL = {
   title: 'input[data-vv-name="title"]',
   description: 'textarea[data-vv-name="description"]',
-  price: 'input[data-vv-name="listingPrice"]',
+  price: 'input[data-vv-name="listingPrice"]', // the Listing Price (never data-vv-name="originalPrice")
+  /** Focusing the Listing Price opens a "Listing Price" window (Smart Sell) with its own box and a Done button. */
+  priceModalInput: '#listing-price-modal-listing-price-input',
   quantity: 'input[data-vv-name*="quantity" i], input[name*="quantity" i], input[aria-label*="quantity" i]',
   qtySection: '[data-et-name="listingEditorQuanititySection"], [data-et-name="listingEditorQuantitySection"]',
   single: 'button[data-et-name="one"]',
@@ -224,14 +230,6 @@ function sameValue(el: HTMLInputElement | HTMLTextAreaElement, v: unknown): bool
   if (isPrice(el) || el.type === "number" || /quantity|qty/i.test(el.getAttribute("data-vv-name") ?? el.name ?? "")) { const a = num(el.value), b = num(s); if (a !== null && b !== null) return a === b; }
   return norm(el.value) === norm(s);
 }
-function setIfDifferent(el: HTMLInputElement | HTMLTextAreaElement | null, v: unknown): "missing" | "same" | "changed" {
-  if (v === undefined || v === null) return "same";
-  if (!el) return "missing";
-  const s = String(v);
-  if (sameValue(el, v)) return "same";
-  setValue(el, s);
-  return "changed";
-}
 const priceField = (doc: Document) => q<HTMLInputElement>(doc, REAL.price) ??
   field(doc, "input", /listing price/i) ?? Array.from(doc.querySelectorAll<HTMLInputElement>("input")).find((i) => {
     const hay = `${i.name} ${i.id} ${i.getAttribute("aria-label") ?? ""} ${i.placeholder}`;
@@ -280,13 +278,58 @@ function editFieldsStep(doc: Document, page: Page, phase: string, p: Record<stri
   }
   const missing = fields.filter((f) => !f.el).map((f) => f.name);
   if (missing.length) return stop("unexpected_page", `Could not find the ${missing.join(", ")} field on the edit page`);
-  const results = fields.map((f) => setIfDifferent(f.el, f.want));
-  if (!results.includes("changed")) return { kind: "done", result: { alreadyDone: true, note: "Nothing to change" } };
+  const price = fields.find((f) => f.name === "price");
+  const digits = price ? priceDigits(price.want) : null;
+  if (price && digits === null) return stop("invalid_payload", `Poshmark prices are whole dollars of at least $3 (got ${String(price.want)}). Nothing was changed.`);
+
+  if (phase === "start") {
+    let changed = false;
+    for (const f of fields) {
+      if (sameValue(f.el!, f.want)) continue;
+      changed = true;
+      if (f === price) { click(f.el!); typeValue(f.el!, digits!); } // a click may open the Listing Price window (next phase)
+      else typeValue(f.el!, String(f.want));
+    }
+    if (!changed) return { kind: "done", result: { alreadyDone: true, note: "Nothing to change" } };
+    return price ? { kind: "wait", phase: "price", ms: 800 } : { kind: "wait", phase: "check", ms: 600 };
+  }
+  const box = priceModalBox(doc);
+  if (phase === "price" && box) { typeValue(box, digits!); return { kind: "wait", phase: "pricedone", ms: 600 }; }
+  if (phase === "pricedone") {
+    if (!box) return stop("unexpected_page", "The Listing Price window closed before we could press Done. Nothing was saved.", true);
+    const m = box.closest<HTMLElement>(MODAL)!, err = visibleError(m);
+    if (num(box.value) !== Number(digits) || err) return stop("unexpected_page", `The new price did not stick in the Listing Price window${err ? ` (Poshmark: ${err})` : ""}. Nothing was saved.`, true);
+    const done = byText<HTMLElement>(m, 'button, [role="button"]', /^(done|apply|save|ok)$/i)[0];
+    if (!done) return stop("unexpected_page", "Could not find Done in the Listing Price window. Nothing was saved.", true);
+    click(done);
+    return { kind: "wait", phase: "check", ms: 800 };
+  }
+  // "check" (or "price" with no window): the boxes must show exactly what we typed, with no error, before Update is pressed.
+  if (box) return stop("unexpected_page", "The Listing Price window is still open. Nothing was saved.", true);
+  const off = fields.filter((f) => !sameValue(f.el!, f.want) || (f === price && !f.el!.value.trim())).map((f) => f.name);
+  if (off.length) return stop("unexpected_page", `The ${off.join(", ")} did not stick on the edit page (the box shows "${fields.find((f) => f.name === off[0])!.el!.value.slice(0, 40)}"). Nothing was saved.`, true);
+  const err = formError(doc);
+  if (err) return stop("unexpected_page", `Poshmark shows "${err.slice(0, 160)}" on the edit page. Nothing was saved.`, true);
   const save = saveButton(doc);
   if (!save) return stop("unexpected_page", "Could not find the Update button");
   click(save);
   return { kind: "wait", phase: "saved", ms: 5000 };
 }
+/** Poshmark takes whole dollars, digits only ("25", never "$25.00"); at least $3. */
+function priceDigits(v: unknown): string | null {
+  const n = typeof v === "number" ? v : num(String(v ?? ""));
+  if (n === null || !Number.isFinite(n) || n < 3 || Math.abs(n - Math.round(n)) > 1e-9) return null;
+  return String(Math.round(n));
+}
+const priceModalBox = (doc: Document) => {
+  const b = q<HTMLInputElement>(doc, REAL.priceModalInput);
+  const m = b?.closest<HTMLElement>(MODAL);
+  return b && m && m.classList.contains("modal--in") ? b : null;
+};
+const visibleError = (root: ParentNode) => {
+  const e = Array.from(root.querySelectorAll<HTMLElement>(".form__error-message, [role='alert']")).find((x) => x.style.display !== "none" && !x.hidden && textOf(x));
+  return e ? textOf(e) : "";
+};
 
 function createStep(doc: Document, page: Page, p: Record<string, unknown>): StepResult {
   if (page !== "create") return stop("unexpected_page", `Expected the new listing page, got ${page}`);
@@ -348,10 +391,14 @@ export function poshmarkStep(doc: Document, input: StepInput): StepResult {
     case "updateListing": return editFieldsStep(doc, page, input.phase, p, false);
     case "createListing": return createStep(doc, page, p);
     case "getSales": {
-      if (page !== "sales") return stop("unexpected_page", `Expected your sales page, got ${page}`);
-      if (auth === null) return stop("unexpected_page", "Could not tell whether you are signed in to Poshmark");
+      if (page !== "sales") {
+        // Mid-redirect or an odd landing page: open My Sales once more before giving up.
+        if (input.phase !== "again") return { kind: "goto", page: "sales", phase: "again" };
+        return stop("unexpected_page", `Expected your Poshmark sales page, but the tab is on ${pathOf(input.url)}`);
+      }
+      // A signed-out visit is redirected to /login (handled above), so an unclear header here is fine.
       const r = parseSales(doc, (p.cursor as string | null | undefined) ?? null, (p.limit as number | undefined) ?? 50);
-      return { kind: "done", loggedIn: true, sales: r.sales, nextCursor: r.nextCursor };
+      return { kind: "done", loggedIn: auth ?? true, sales: r.sales, nextCursor: r.nextCursor };
     }
     case "getListings": {
       if (page === "home" || page === "other") {

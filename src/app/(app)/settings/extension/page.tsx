@@ -3,6 +3,7 @@ import { getServices } from "@/lib/data";
 import { SchemaMissingError, type ExtensionDevice, type MarketplaceLoginState, type MarketplaceSetting } from "@/lib/data/types";
 import { EXT_MARKETPLACES, HOST_TABLE } from "@/lib/ext/protocol";
 import PairBox from "./PairBox";
+import SpeedBox from "./SpeedBox";
 import { pauseDeviceAction, pauseMarketplaceAction, revokeDeviceAction, setSoldActionAction } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -65,6 +66,15 @@ export default async function ExtensionSettings({ searchParams }: { searchParams
           </div>
         ))}
         <p className="muted small">Pause stops new jobs on that browser (waiting jobs stay in the queue). Remove signs the extension out for good.</p>
+      </div>
+      <div className="card">
+        <h2>Speed</h2>
+        <p className="muted small" style={{ marginTop: 0 }}>
+          <b>Normal</b> works like Vendoo: 2 to 10 seconds between actions, a short pause after about 25 in a row, and at most 100 actions an hour
+          on Poshmark (60 on Facebook). <b>Careful</b> is slower (20 to 90 seconds, a 3 to 8 minute break every 5 to 8 actions, 30 an hour).
+          Delists and mark-sold always go first. Errors and security checks still pause a marketplace by themselves.
+        </p>
+        <SpeedBox extId={extId} marketplaces={EXT_MARKETPLACES.map((m) => ({ id: m, label: HOST_TABLE[m].label }))} />
       </div>
       <div className="card">
         <h2>When an item sells</h2>

@@ -3,6 +3,8 @@ import Link from "next/link";
 import { getServices } from "@/lib/data";
 import PhotoUploader from "@/components/PhotoUploader";
 import { buildTimeline } from "@/lib/jobs/timeline";
+import JobLive from "@/components/JobLive";
+import JobMark from "@/components/JobMark";
 import { when } from "@/lib/jobs/format";
 import { deleteItemAction, deletePhotoAction, linkListingAction, setStatusAction, testAction } from "../actions";
 import { isTestItem, LINKABLE_MARKETPLACES } from "@/lib/jobs/test-actions";
@@ -102,13 +104,14 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
       {timeline && (
         <div className="card">
           <h2>Sync log</h2>
+          <JobLive itemId={id} />
           {timeline.length === 0 && <span className="muted small">Nothing has happened on any marketplace yet.</span>}
           <ul className="tl">
             {timeline.map((r, n) => (
               <li key={n}>
                 <span className="when">{when(r.at)}</span>
                 <span className="small">
-                  <b>{r.label}</b>{r.marketplace && <span className="muted"> · {r.marketplace}</span>}{r.source && <span className="muted"> · {r.source}</span>}
+                  {r.outcome && <JobMark status={r.outcome === "success" ? "succeeded" : "failed"} />}<b>{r.label}</b>{r.marketplace && <span className="muted"> · {r.marketplace}</span>}{r.source && <span className="muted"> · {r.source}</span>}
                   {r.detail && <div className="muted">{r.detail}</div>}
                 </span>
               </li>

@@ -6,6 +6,9 @@ import { loadOverview } from "@/lib/jobs/overview";
 import { when } from "@/lib/jobs/format";
 import { jobLabel, statusWord } from "@/lib/jobs/labels";
 import { retryJobAction, cancelJobAction } from "./actions";
+import { supersedeDuplicates } from "@/lib/jobs/supersede";
+import JobLive from "@/components/JobLive";
+import JobMark from "@/components/JobMark";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +28,7 @@ export default async function JobsPage({ searchParams }: { searchParams: Promise
   let jobs: Job[] = [];
   let loadError: string | null = overview.ready ? null : overview.error;
   if (overview.ready) {
+    await supersedeDuplicates(store).catch(() => 0); // clears duplicates queued before 1.0.4
     try { jobs = await store.jobs.list({ status: current.statuses, limit: 200 }); }
     catch (e) { loadError = e instanceof Error ? e.message : String(e); }
   }
@@ -46,6 +50,7 @@ export default async function JobsPage({ searchParams }: { searchParams: Promise
 
       {overview.ready && (
         <>
+          <JobLive />
           <div className="tabs" role="tablist">
             {TABS.map((t) => (
               <Link key={t.id} href={t.id === "all" ? "/jobs" : `/jobs?tab=${t.id}`} className={"tab" + (t.id === current.id ? " on" : "")}>
@@ -59,7 +64,7 @@ export default async function JobsPage({ searchParams }: { searchParams: Promise
             <div key={j.id} className="item jobrow">
               <Link href={`/jobs/${j.id}`} style={{ minWidth: 0, flex: "1 1 220px", color: "var(--text)" }}>
                 <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                  <b>{jobLabel(j)}</b><span className="muted small">· {j.marketplace} · {j.executor === "api" ? "official API" : "browser extension"}</span>
+                  <JobMark status={j.status} /><b>{jobLabel(j)}</b><span className="muted small">· {j.marketplace} · {j.executor === "api" ? "official API" : "browser extension"}</span>
                   <span className={`pill ${j.status}`}>{statusWord(j.status)}</span>
                 </div>
                 <div className="muted small">

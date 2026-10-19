@@ -1,22 +1,43 @@
 // Pacing and safety limits (spec 5, account-risk protection). Pure: state in, state out, the caller stores it. No clock reads.
-// - one job at a time per marketplace, then a random 20-90 s gap
+// - one job at a time per marketplace, then a random gap (speed "normal": 2-10 s, like Vendoo; "careful": 20-90 s, the 1.0.3 pace)
 // - daily caps per marketplace and action (local day)
 // - an error burst (3 errors in 15 min) pauses that marketplace for an hour
 // - 2 security checks (captcha / challenge) in a row pause that marketplace until you resume it
 // - kill switch: the whole browser (device) or one marketplace
-// - human-like spacing (David, 2026-10-19): a 3-8 minute break after every 5-8 actions, and an hourly cap per marketplace
-//   (Poshmark 30/hour). Delist / mark sold skip the long break (overselling is worse) but keep the short gap and every cap.
+// - breaks: "normal" pauses 20-40 s after ~25 actions in a row; "careful" takes 3-8 minutes after every 5-8 actions
+// - an hourly cap per marketplace as a backstop ("normal" Poshmark 100/hour; "careful" 30/hour; overridable per browser)
+// - delist / mark sold skip the breaks (overselling is worse) but keep the short gap and every cap
+// Speed is per marketplace, per browser (PacingState.speed), set from Settings > Extension; default "normal" (David, 1.0.4).
 import type { Action, ExtMarketplace } from "../../src/lib/ext/protocol";
 
+export type Speed = "normal" | "careful";
+export const SPEEDS: readonly Speed[] = ["normal", "careful"];
+type Profile = {
+  gapMinMs: number; gapMaxMs: number;
+  /** A break after every `everyMin`-`everyMax` actions in a row, `minMs`-`maxMs` long. */
+  longBreak: { everyMin: number; everyMax: number; minMs: number; maxMs: number };
+  /** Actions per marketplace per rolling hour. Override per browser with PacingState.hourlyCaps. */
+  hourlyCaps: Record<ExtMarketplace, number>;
+};
+export const PROFILES: Record<Speed, Profile> = {
+  // Vendoo-like: a few seconds between actions, a short breather after a long run, a high hourly backstop.
+  normal: {
+    gapMinMs: 2_000, gapMaxMs: 10_000,
+    longBreak: { everyMin: 25, everyMax: 25, minMs: 20_000, maxMs: 40_000 },
+    hourlyCaps: { poshmark: 100, facebook: 60, depop: 100, grailed: 100, mercari: 100, vinted: 100 },
+  },
+  // The 1.0.3 pace.
+  careful: {
+    gapMinMs: 20_000, gapMaxMs: 90_000,
+    longBreak: { everyMin: 5, everyMax: 8, minMs: 3 * 60_000, maxMs: 8 * 60_000 },
+    hourlyCaps: { poshmark: 30, facebook: 20, depop: 30, grailed: 30, mercari: 30, vinted: 30 },
+  },
+};
 export const PACING = {
-  gapMinMs: 20_000,
-  gapMaxMs: 90_000,
+  ...PROFILES.normal,
   errorBurst: { count: 3, windowMs: 15 * 60_000, pauseMs: 60 * 60_000 },
   challengesInARow: 2,
-  /** Per marketplace per local day. Deliberately low; tune with David. */
-  longBreak: { everyMin: 5, everyMax: 8, minMs: 3 * 60_000, maxMs: 8 * 60_000 },
-  /** Actions per marketplace per rolling hour. Override per browser with PacingState.hourlyCaps. */
-  hourlyCaps: { poshmark: 30, facebook: 20, depop: 30, grailed: 30, mercari: 30, vinted: 30 } as Record<ExtMarketplace, number>,
+  /** Per marketplace per local day. */
   dailyCaps: { checkLogin: 100, delist: 100, markSold: 100, updateQuantity: 100, updateListing: 50, createListing: 20, getSales: 150, getListings: 30 } as Record<Action, number>,
 } as const;
 const CHALLENGE = new Set(["captcha", "challenge", "verification_required"]);
@@ -40,10 +61,16 @@ export interface MarketplacePacing {
   /** Start times of actions in the last hour (hourly cap). */
   hour?: number[];
 }
-export interface PacingState { devicePaused: boolean; mp: Partial<Record<ExtMarketplace, MarketplacePacing>>; hourlyCaps?: Partial<Record<ExtMarketplace, number>> }
+export interface PacingState {
+  devicePaused: boolean; mp: Partial<Record<ExtMarketplace, MarketplacePacing>>;
+  hourlyCaps?: Partial<Record<ExtMarketplace, number>>;
+  speed?: Partial<Record<ExtMarketplace, Speed>>;
+}
 /** Line-jumpers: they skip the long break (not the short gap or the caps). */
 export const URGENT_ACTIONS: ReadonlySet<Action> = new Set<Action>(["delist", "markSold"]);
-export const hourlyCap = (s: PacingState, m: ExtMarketplace) => s.hourlyCaps?.[m] ?? PACING.hourlyCaps[m] ?? 30;
+export const speedOf = (s: PacingState, m: ExtMarketplace): Speed => (s.speed?.[m] === "careful" ? "careful" : "normal");
+const profile = (s: PacingState, m: ExtMarketplace) => PROFILES[speedOf(s, m)];
+export const hourlyCap = (s: PacingState, m: ExtMarketplace) => s.hourlyCaps?.[m] ?? profile(s, m).hourlyCaps[m] ?? 30;
 const HOUR = 3600_000;
 export const emptyPacing = (): PacingState => ({ devicePaused: false, mp: {} });
 
@@ -91,16 +118,20 @@ export function begin(s: PacingState, m: ExtMarketplace, action: Action, now: nu
   return put(s, m, r);
 }
 /** The random gap before the next job on the same marketplace. `rand` in [0, 1). */
-export const gapMs = (rand: number) => Math.round(PACING.gapMinMs + Math.min(Math.max(rand, 0), 0.999999) * (PACING.gapMaxMs - PACING.gapMinMs));
+export const gapMs = (rand: number, speed: Speed = "normal") => {
+  const p = PROFILES[speed];
+  return Math.round(p.gapMinMs + Math.min(Math.max(rand, 0), 0.999999) * (p.gapMaxMs - p.gapMinMs));
+};
 
 /** Second random number from the first (keeps the signature small and the tests deterministic). */
 const rand2 = (rand: number) => (Math.min(Math.max(rand, 0), 0.999999) * 7919.123) % 1;
 export function finish(s: PacingState, m: ExtMarketplace, outcome: { ok: true } | { ok: false; code: string }, now: number, rand: number): PacingState {
   const r = row(s, m, now);
   r.busy = false; r.busySince = null;
-  r.nextAt = now + gapMs(rand);
-  // Long break after every 5-8 actions (a delist or mark sold still counts, it just doesn't wait for the break).
-  const lb = PACING.longBreak;
+  r.nextAt = now + gapMs(rand, speedOf(s, m));
+  // A break after a run of actions (a delist or mark sold still counts, it just doesn't wait for the break).
+  const lb = profile(s, m).longBreak;
+  if (r.breakAfter !== undefined && (r.breakAfter < lb.everyMin || r.breakAfter > lb.everyMax)) r.breakAfter = undefined; // speed changed
   r.breakAfter ??= lb.everyMin + Math.floor(rand2(rand) * (lb.everyMax - lb.everyMin + 1));
   r.sinceBreak = (r.sinceBreak ?? 0) + 1;
   if (r.sinceBreak >= r.breakAfter) {
@@ -139,4 +170,25 @@ export function clearErrorBursts(s: PacingState): PacingState {
   }
   return { ...s, mp };
 }
+/** Change one marketplace's speed. Waits that the old speed set (a long break, a long gap) are cut to the new speed's maximum. */
+export function setSpeed(s: PacingState, m: ExtMarketplace, speed: Speed, now: number): PacingState {
+  const r = row(s, m, now), p = PROFILES[speed];
+  r.nextAt = Math.min(r.nextAt, now + p.gapMaxMs);
+  if ((r.breakUntil ?? 0) > now + p.longBreak.maxMs) r.breakUntil = now + p.longBreak.maxMs;
+  r.breakAfter = undefined;
+  if ((r.sinceBreak ?? 0) >= p.longBreak.everyMax) r.sinceBreak = 0;
+  return { ...put(s, m, r), speed: { ...s.speed, [m]: speed } };
+}
+/** All marketplaces re-fitted to their current speed (the 1.0.4 upgrade: 1.0.3 left 3-8 minute breaks and 20-90 s gaps behind). */
+export function refitSpeeds(s: PacingState, now: number): PacingState {
+  let out = s;
+  for (const m of Object.keys(s.mp) as ExtMarketplace[]) out = setSpeed(out, m, speedOf(s, m), now);
+  return { ...out, speed: s.speed };
+}
 export const todayCounts = (s: PacingState, m: ExtMarketplace, now: number) => row(s, m, now).counts;
+/** Popup line: seconds away -> "Next action in about 7 s"; further -> "Next action around 4:12 PM". */
+export function nextActionText(until: number, now: number): string {
+  const ms = until - now;
+  if (ms < 60_000) return `Next action in about ${Math.max(1, Math.ceil(ms / 1000))} s`;
+  return `Next action around ${new Date(until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}

@@ -23,8 +23,9 @@ const originOf = (s: Sender): string | null => {
 };
 
 // ---------------------------------------------------------------- web page (our dashboard) -> extension
-const externalSchema = obj({ type: oneOf(["pair", "status", "run"] as const), code: str({ min: 8, max: 12 }), action: oneOf(["checkLogin"] as const), marketplace: oneOf(EXT_MARKETPLACES) }, ["code", "action", "marketplace"]);
-export type ExternalRequest = { type: "pair"; code: string } | { type: "status" } | { type: "run"; action: "checkLogin"; marketplace: ExtMarketplace };
+const externalSchema = obj({ type: oneOf(["pair", "status", "run", "speed"] as const), code: str({ min: 8, max: 12 }), action: oneOf(["checkLogin"] as const), marketplace: oneOf(EXT_MARKETPLACES), speed: oneOf(["normal", "careful"] as const) }, ["code", "action", "marketplace", "speed"]);
+export type ExternalRequest = { type: "pair"; code: string } | { type: "status" } | { type: "run"; action: "checkLogin"; marketplace: ExtMarketplace }
+  | { type: "speed"; marketplace: ExtMarketplace; speed: "normal" | "careful" };
 
 export function parseExternal(msg: unknown, sender: Sender, cfg: HandlerConfig): { ok: true; req: ExternalRequest } | Rejected {
   if (originOf(sender) !== cfg.apiOrigin) return { ok: false, reason: "foreign_origin" };
@@ -36,7 +37,11 @@ export function parseExternal(msg: unknown, sender: Sender, cfg: HandlerConfig):
     if (m.action !== "checkLogin" || !m.marketplace) return { ok: false, reason: "invalid: only checkLogin can be requested by a page" };
     return { ok: true, req: { type: "run", action: "checkLogin", marketplace: m.marketplace } };
   }
-  if (m.code !== undefined || m.action !== undefined || m.marketplace !== undefined) return { ok: false, reason: "invalid: unexpected fields" };
+  if (m.type === "speed") {
+    if (!m.marketplace || !m.speed || m.code !== undefined || m.action !== undefined) return { ok: false, reason: "invalid: speed needs a marketplace and normal / careful" };
+    return { ok: true, req: { type: "speed", marketplace: m.marketplace, speed: m.speed } };
+  }
+  if (m.code !== undefined || m.action !== undefined || m.speed !== undefined || m.marketplace !== undefined) return { ok: false, reason: "invalid: unexpected fields" };
   return { ok: true, req: { type: "status" } };
 }
 

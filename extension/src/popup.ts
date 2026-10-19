@@ -4,7 +4,7 @@ import { EXT_MARKETPLACES, HOST_TABLE, type ExtMarketplace } from "../../src/lib
 import { originsFor } from "./chrome-browser";
 import { pairingPageUrl } from "./handler";
 import type { ExtState } from "./worker";
-import { readiness, todayCounts } from "./pacing";
+import { nextActionText, readiness, speedOf, todayCounts } from "./pacing";
 
 type StateReply = { ok: boolean; state: ExtState; connected: ExtMarketplace[]; version: string; apiOrigin: string; error?: string };
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -47,7 +47,8 @@ async function render() {
     const counts = todayCounts(s.pacing, m, Date.now());
     const done = Object.values(counts).reduce((a, b) => a + (b ?? 0), 0);
     li.append(el("div", `${v.ok ? "Ready" : v.reason}${srv ? ` · dashboard: ${srv}` : ""} · ${done} today`, "muted"));
-    if (!v.ok && v.spacing && v.until) li.append(el("div", `Next action around ${new Date(v.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (spacing to stay safe)${v.urgentOk ? "; delists still go first" : ""}`, "muted"));
+    if (!v.ok && v.spacing && v.until) li.append(el("div", `${nextActionText(v.until, Date.now())} (spacing to stay safe)${v.urgentOk ? "; delists still go first" : ""}`, "muted"));
+    if (speedOf(s.pacing, m) === "careful") li.append(el("div", "Speed: Careful (slower; change it in Settings > Extension)", "muted"));
     const row = el("div", "", "row");
     const autoUntil = s.pacing.mp[m]?.pausedUntil ?? 0;
     const autoPaused = !mpPaused && autoUntil > Date.now();
@@ -96,3 +97,4 @@ $("pollNow").addEventListener("click", async () => { say("Checking..."); const r
 $("scanNow").addEventListener("click", async () => { say("Scanning sales..."); const r = await send<{ ok: boolean; notes?: string[]; error?: string }>({ type: "scanNow" }); say(r.ok ? (r.notes?.join(" · ") || "Nothing connected to scan") : (r.error ?? "")); void render(); });
 $("unpair").addEventListener("click", async () => { if (confirm("Unpair this browser? Also revoke it in Settings > Extension.")) { await send({ type: "unpair" }); void render(); } });
 void render();
+setInterval(() => void render(), 2000); // keeps "Next action in about N s" current

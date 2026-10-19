@@ -1,6 +1,7 @@
 // Per-item timeline (spec 6A): item_sync_log entries plus the job log, merged oldest to newest... newest first for display.
 import type { ItemSyncLogEntry, Job, JobEvent, Marketplace } from "../data/types";
 import { jobEventLabel, jobLabel } from "./labels";
+import { outcomeOf, type AlertKind } from "./alerts";
 
 export interface TimelineRow {
   at: string;
@@ -10,6 +11,8 @@ export interface TimelineRow {
   source: string | null;
   detail: string | null;
   jobId: string | null;
+  /** For job lines: the green check / red X (succeeded / failed or needs you). */
+  outcome?: AlertKind | null;
 }
 const words = (s: string) => s.replace(/_/g, " ");
 
@@ -26,7 +29,7 @@ export function buildTimeline(entries: ItemSyncLogEntry[], jobs: Job[], events: 
       if (!j) return [];
       const why = ev.toStatus === "queued" && ev.fromStatus === null ? queuedWhy.get(j.id) : undefined;
       const detail = why ?? (ev.message && !/^queued$/i.test(ev.message) ? ev.message : null);
-      return [{ at: ev.at, kind: "job", label: jobEventLabel(ev.toStatus, jobLabel(j), j.marketplace), marketplace: j.marketplace, source: j.executor, detail, jobId: j.id }];
+      return [{ at: ev.at, kind: "job", label: jobEventLabel(ev.toStatus, jobLabel(j), j.marketplace), marketplace: j.marketplace, source: j.executor, detail, jobId: j.id, outcome: outcomeOf(ev.toStatus) }];
     }),
   ];
   return rows.sort((a, b) => b.at.localeCompare(a.at));

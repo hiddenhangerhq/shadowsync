@@ -180,3 +180,4 @@ label.f .input{margin-top:4px}
 .setup{border:var(--bw) dashed var(--warn);border-radius:var(--radius);padding:12px;background:var(--bg-2)}
 .setup b{color:var(--warn)}
 .okmsg{color:var(--ok);margin:0 0 10px}
+.jobmark{display:inline-block;font-weight:900;margin-right:6px}.jobmark.success{color:var(--ok)}.jobmark.failure{color:var(--danger)}

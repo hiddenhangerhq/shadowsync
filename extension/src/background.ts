@@ -36,14 +36,28 @@ chrome.runtime.onInstalled.addListener((info) => {
 });
 chrome.runtime.onStartup.addListener(setupAlarms);
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === "poll") void serial(() => w.poll(deps));
+  if (a.name === "poll" || a.name === "pollSoon") void pollChain();
   else if (a.name === "scan") void serial(() => w.scan(deps));
   else if (a.name === "login") void serial(() => w.checkAllLogins(deps));
 });
 
+// Back-to-back queue: after a poll that ran jobs, poll again as soon as pacing allows (a timer for short waits keeps the worker awake;
+// a one-off alarm for longer ones). An empty poll ends the chain; the 5-minute alarm picks up new work.
+let soon: ReturnType<typeof setTimeout> | null = null;
+async function pollChain(): Promise<Awaited<ReturnType<typeof w.poll>>> {
+  const r = await serial(() => w.poll(deps));
+  if ("ran" in r && r.ran > 0) {
+    const ms = await w.nextWakeMs(deps);
+    if (soon) { clearTimeout(soon); soon = null; }
+    if (ms <= 25_000) soon = setTimeout(() => { soon = null; void pollChain(); }, Math.max(ms, 500) + 250);
+    else if (Number.isFinite(ms)) chrome.alarms.create("pollSoon", { when: Date.now() + ms + 1000 });
+  }
+  return r;
+}
+
 async function status() {
   const s = await deps.store.load();
-  return { ok: true, paired: !!s.token, deviceId: s.deviceId, version: EXT_VERSION, paused: s.pacing.devicePaused };
+  return { ok: true, paired: !!s.token, deviceId: s.deviceId, version: EXT_VERSION, paused: s.pacing.devicePaused, speed: s.pacing.speed ?? {} };
 }
 
 // Our dashboard page (only API_ORIGIN is listed in externally_connectable, and parseExternal checks again).
@@ -52,6 +66,7 @@ chrome.runtime.onMessageExternal.addListener((msg, sender, reply) => {
   if (!p.ok) { reply({ ok: false, error: p.reason }); return false; }
   const r = p.req;
   const work = r.type === "status" ? status()
+    : r.type === "speed" ? serial(() => w.setMarketplaceSpeed(deps, r.marketplace, r.speed)).then(() => ({ ok: true }))
     : r.type === "pair" ? serial(() => w.pair(deps, r.code, browserLabel())).then((x) => ({ ok: true, ...x }))
     : serial(() => w.checkLogin(deps, r.marketplace)).then((x) => (x.ok ? { ok: true, loggedIn: x.loggedIn ?? null } : { ok: false, error: x.message }));
   work.then(reply, (e: Error) => reply({ ok: false, error: e.message }));
@@ -66,7 +81,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   const run = async (): Promise<unknown> => {
     switch (r.type) {
       case "state": return { ok: true, state: redact(await deps.store.load()), connected: await w.connected(deps), apiOrigin: API_ORIGIN, version: EXT_VERSION };
-      case "pollNow": return { ok: true, ...(await serial(() => w.poll(deps))) };
+      case "pollNow": return { ok: true, ...(await pollChain()) };
       case "scanNow": return { ok: true, ...(await serial(() => w.scan(deps, { salesOnly: true }))) };
       case "pair": if (!r.code) throw new Error("Enter the code"); return { ok: true, ...(await serial(() => w.pair(deps, r.code!, browserLabel()))) };
       case "unpair": await w.unpair(deps); return { ok: true };

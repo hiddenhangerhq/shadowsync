@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getServices } from "@/lib/data";
 import ThemePicker from "@/components/ThemePicker";
+import JobSoundsToggle from "@/components/JobSoundsToggle";
 import { logoutAction } from "@/app/auth-actions";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,10 @@ export default async function Settings() {
         <h2>Theme</h2>
         <p className="muted small" style={{ marginTop: 0 }}>System follows your device. Your choice is saved to your account and this device.</p>
         <ThemePicker initial={profile?.theme ?? "system"} />
+      </div>
+      <div className="card">
+        <h2>Job sounds</h2>
+        <JobSoundsToggle />
       </div>
       <div className="card">
         <h2>Marketplace connections</h2>

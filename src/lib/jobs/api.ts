@@ -8,7 +8,7 @@ import { parseCreateJob, parseLimit, parseStatusFilter, isUuid } from "./validat
 import { buildTimeline } from "./timeline";
 import { loadOverview } from "./overview";
 import { jobEventLabel, jobLabel } from "./labels";
-import { isUrgentJob, spreadNextRunAt } from "./spacing";
+import { supersedeDuplicates } from "./supersede";
 
 export interface ApiResult { status: number; body: Record<string, unknown> }
 const fail = (status: number, error: string, extra: Record<string, unknown> = {}): ApiResult => ({ status, body: { error, ...extra } });
@@ -51,14 +51,13 @@ export const createJob = (svc: Services, body: unknown) =>
       if (l.marketplace !== r.marketplace || (r.itemId && l.itemId !== r.itemId)) return fail(400, "Listing does not belong to that item and marketplace");
     }
     const executor = executorFor(r.marketplace, await svc.store.connections.list());
-    // Big batches are spread out (next_run_at) instead of running back to back; delist / mark sold always go now.
-    const nextRunAt = executor === "extension" && !isUrgentJob(r.jobType)
-      ? spreadNextRunAt((await svc.store.jobs.list({ status: ["queued", "retry_wait"] })).filter((j) => j.marketplace === r.marketplace && j.executor === "extension" && !isUrgentJob(j.jobType)), new Date())
-      : undefined;
+    // 1.0.4: no spreading. A batch queues back to back; the extension spaces it (2-10 s, or Careful 20-90 s) and keeps the hourly cap.
     const { job, created } = await svc.store.jobs.enqueue({
-      marketplace: r.marketplace, jobType: r.jobType, executor, itemId: r.itemId, listingId: r.listingId, payload: r.payload, ...(nextRunAt ? { nextRunAt } : {}),
+      marketplace: r.marketplace, jobType: r.jobType, executor, itemId: r.itemId, listingId: r.listingId, payload: r.payload,
       idempotencyKey: r.idempotencyKey ?? `manual:${r.jobType}:${r.listingId ?? `${r.itemId}:${r.marketplace}`}`,
     });
+    // A newer edit of the same listing field replaces older waiting ones (only the latest value runs).
+    if (created && r.listingId && r.jobType === "update_listing") await supersedeDuplicates(svc.store, { listingId: r.listingId }).catch(() => 0);
     if (created && (r.jobType === "delist" || r.jobType === "mark_sold")) {
       await svc.store.itemSyncLog.append({ event: "delist_queued", source: "manual", itemId: job.itemId, listingId: job.listingId,
         marketplace: job.marketplace, jobId: job.id, detail: `${jobEventLabel("queued", jobLabel(job), job.marketplace)} (by you)` }).catch(() => undefined);

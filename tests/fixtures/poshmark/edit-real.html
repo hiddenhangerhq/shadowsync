@@ -23,7 +23,25 @@
             Price Drop
           </a></div><p class="form__error-message" style="display: none;">
     Invalid Price
-  </p><div></div></div><div class="m--t--3"><div showloadingspinner="true"><div class="seller-shipping-discount d--fl fd--c"><h4 class="seller-shipping-discount__title seller-shipping-discount__title--default m--b--3">
+  </p><div><div><div class="modal-backdrop" data-test="modal"></div><div class="modal simple-modal listing-price-suggestion-modal" data-test="modal-container"><div class="modal__header modal__header--borderless"><h5 class="modal__title modal__title--borderless" data-test="modal-title"></h5><p class="tc--b fw--med listing-price-suggestion-modal__title">
+        Listing Price
+        </p><button class="btn btn--close modal__close-btn simple-modal-close" data-test="modal-close-btn" type="button"><i class="cross"></i></button></div><div class="modal__body listing-price-suggestion-modal__body" data-test="modal-body"><div class="listing-price-suggestion-modal__body-content p--h--2"><div class="listing-price-suggestion-modal__main-price-section m--b--4"><div class="d--fl ai--c ps--r listing-price-suggestion-modal__price-input-wrap listing-price-suggestion-modal__price-input-wrap--main-listing"><div class="listing-price-suggestion-modal__main-price-dollar-field width--100"><input aria-label="Listing Price" autocomplete="off" class="ff--no-increment-input form__text form__text--input listing-price-suggestion-modal__price-input" dir="ltr" id="listing-price-modal-listing-price-input" inputmode="numeric" maxlength="15" pattern="[0-9]*" placeholder="Required" type="text"/></div><span class="tc--b listing-price-suggestion-modal__earnings-suffix">
+              Earnings: $--
+            </span></div><p class="form__error-message p--t--1" style="display: none;">
+            Enter a listing price to continue
+          </p><p class="form__error-message p--t--1" style="display: none;">
+            Item must have a minimum price of $3 to be available for sale
+          </p><p class="form__error-message p--t--1" style="display: none;">
+            Invalid Price
+          </p></div><div class="listing-price-suggestion-modal__smart-sell m--b--4 width--100"><section class="listing-price-suggestion-modal__smart-sell-section"><div class="listing-price-suggestion-modal__smart-sell-title-container"><h4 class="listing-price-suggestion-modal__smart-sell-title">
+                Smart Sell
+              </h4><button aria-label="Learn More" class="listing-price-suggestion-modal__icon-info-button" type="button"></button></div><div class="" data-test="toggle"><label class="toggle__switch" data-test="toggle-switch"><input class="toggle__switch__input" data-test="toggle-input" type="checkbox"/><div class="toggle__switch__slider" data-test="toggle-switch-slider"></div></label></div></section><div class="listing-price-suggestion-modal__smart-sell-description">
+            Automate offers for faster selling
+          </div></div><section class="listing-price-suggestion-modal__mixed-section m--b--1"></section><div class="m--b--4"></div><div class="listing-price-suggestion-modal__original-price-section m--b--4"><div class="listing-price-suggestion-modal__section-label m--b--1 tc--b" id="listing-price-modal-original-price-label">
+            Original Price
+          </div><input aria-labelledby="listing-price-modal-original-price-label" autocomplete="off" class="listing-price-suggestion-modal__original-price-input ff--no-increment-input form__text form__text--input p--4" id="listing-price-modal-original-price-input" inputmode="numeric" maxlength="15" pattern="[0-9]*" placeholder="Optional" type="text"/></div></div></div><div class="modal__footer modal__footer--borderless" data-test="modal-footer"><button class="btn btn--primary">
+        Done
+      </button></div></div></div></div></div><div class="m--t--3"><div showloadingspinner="true"><div class="seller-shipping-discount d--fl fd--c"><h4 class="seller-shipping-discount__title seller-shipping-discount__title--default m--b--3">
       Discounted Shipping
     </h4><div class="seller-shipping-discount__dropdown-wrapper d--fl"><div alwaysexpanddown="true" aria-haspopup="true" class="dropdown listing-editor__input--half--include-cursor" data-test="dropdown" items="[object Object],[object Object],[object Object]" menuclass="width--100" selectorclass="dropdown__selector--select-tag dropdown__selector--select-tag--large" tabindex="0"><div class="" data-test="dropdown-container"><div class="dropdown__selector dropdown__selector--select-tag dropdown__selector--select-tag--large"><div><div><span class="m--r--3 tc--lg">
       Optional

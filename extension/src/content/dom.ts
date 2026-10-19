@@ -47,6 +47,30 @@ export function setValue(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelect
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
+/** Type a value like a person: focus, clear, then one character at a time with key and input events, then change + blur.
+ *  Vue / React inputs that rebuild their value from key or input events (Poshmark's price boxes) keep it this way. */
+export function typeValue(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const proto = Object.getPrototypeOf(el) as object;
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+  const put = (v: string) => { if (setter) setter.call(el, v); else el.value = v; };
+  const view = el.ownerDocument.defaultView as (Window & typeof globalThis) | null;
+  const Key = view?.KeyboardEvent ?? KeyboardEvent, Inp = view?.InputEvent ?? InputEvent;
+  el.focus();
+  el.dispatchEvent(new Event("focus"));
+  put("");
+  el.dispatchEvent(new Inp("input", { bubbles: true, inputType: "deleteContentBackward" }));
+  let so = "";
+  for (const ch of value) {
+    el.dispatchEvent(new Key("keydown", { key: ch, bubbles: true }));
+    el.dispatchEvent(new Key("keypress", { key: ch, bubbles: true }));
+    so += ch; put(so);
+    el.dispatchEvent(new Inp("input", { bubbles: true, inputType: "insertText", data: ch }));
+    el.dispatchEvent(new Key("keyup", { key: ch, bubbles: true }));
+  }
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new Event("blur"));
+  el.dispatchEvent(new Event("focusout", { bubbles: true }));
+}
 export const click = (el: HTMLElement) => el.click();
 /** "$1,234.50" -> 1234.5 */
 export function money(s: string): number | null {

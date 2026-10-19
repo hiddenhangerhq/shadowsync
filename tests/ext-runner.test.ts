@@ -186,7 +186,7 @@ describe("worker end to end on the mock API", () => {
     const h = harness(svc, (u, phase) => (u.endsWith("/feed") ? { kind: "done", loggedIn: true } : phase === "start" ? { kind: "wait", phase: "saved", ms: 1 } : { kind: "done", result: { note: "ok" } }));
     await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
     await h.deps.store.save({ ...h.state, pacing: { devicePaused: false, mp: { poshmark: { busy: false, busySince: null, nextAt: 0, day: "", counts: {}, errors: [], challengeStreak: 0,
-      pausedUntil: 0, paused: false, pausedReason: null, breakUntil: Date.now() + 5 * 60_000, sinceBreak: 0, breakAfter: 6 } } } });
+      pausedUntil: 0, paused: false, pausedReason: null, breakUntil: Date.now() + 5 * 60_000, sinceBreak: 0, breakAfter: 6 } }, speed: { poshmark: "careful" } } });
     const past = new Date(Date.now() - 60_000).toISOString();
     const { job: edit } = await svc.store.jobs.enqueue({ marketplace: "poshmark", jobType: "update_listing", executor: "extension", listingId: l.id, itemId: l.itemId, payload: { quantity: 2 }, nextRunAt: past });
     const { job: del } = await svc.store.jobs.enqueue({ marketplace: "poshmark", jobType: "delist", executor: "extension", listingId: l.id, itemId: l.itemId, idempotencyKey: "d", nextRunAt: past });
@@ -199,6 +199,23 @@ describe("worker end to end on the mock API", () => {
     h.advance(6 * 60_000);
     expect(await w.poll(h.deps)).toMatchObject({ ran: 1 });
     expect((await svc.store.jobs.get(edit.id))?.status).toBe("succeeded");
+  });
+  it("1.0.4: after a job, the next poll can come 2-10 s later (back to back), not at the 5-minute alarm", async () => {
+    const { svc, l } = await setup();
+    const h = harness(svc, (u, phase) => (u.endsWith("/feed") ? { kind: "done", loggedIn: true } : phase === "start" ? { kind: "wait", phase: "saved", ms: 1 } : { kind: "done", result: { note: "ok" } }));
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    const past = new Date(Date.now() - 60_000).toISOString();
+    for (const k of ["a", "b", "c"]) await svc.store.jobs.enqueue({ marketplace: "poshmark", jobType: "delist", executor: "extension", listingId: l.id, itemId: l.itemId, idempotencyKey: k, nextRunAt: past });
+    h.advance(1000);
+    let ran = 0;
+    for (let i = 0; i < 3; i++) {
+      const r = await w.poll(h.deps);
+      ran += "ran" in r ? r.ran : 0;
+      const ms = await w.nextWakeMs(h.deps);
+      expect(ms).toBeGreaterThanOrEqual(0); expect(ms).toBeLessThanOrEqual(10_000);
+      h.advance(ms + 250);
+    }
+    expect(ran).toBe(3); // three delists in about half a minute
   });
   it("Check now says why nothing ran (waiting between jobs, paused here or on the website)", async () => {
     const { svc, enqueue } = await setup();

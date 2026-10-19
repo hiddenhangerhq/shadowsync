@@ -4,11 +4,11 @@ import { startPairingAction } from "./actions";
 
 type ChromeLike = { runtime?: { sendMessage?: (id: string, msg: unknown, cb: (r: unknown) => void) => void; lastError?: unknown } };
 type Status = { ok?: boolean; paired?: boolean; deviceId?: string | null; version?: string };
-const KEY = "ss_ext_id";
-const ID_RE = /^[a-p]{32}$/;
+export const KEY = "ss_ext_id";
+export const ID_RE = /^[a-p]{32}$/;
 
 /** Ask the extension (only our own site may talk to it: externally_connectable + the extension's origin check). null = not there. */
-function ask<T>(extId: string, msg: unknown): Promise<T | null> {
+export function ask<T>(extId: string, msg: unknown): Promise<T | null> {
   const c = (globalThis as { chrome?: ChromeLike }).chrome;
   if (!c?.runtime?.sendMessage) return Promise.resolve(null);
   return new Promise((res) => {

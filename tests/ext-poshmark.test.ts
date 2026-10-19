@@ -145,8 +145,11 @@ describe("delete after a confirmed sale, with a Not For Sale fallback", () => {
 describe("updateQuantity / updateListing / createListing", () => {
   it("quantity: sets the field and saves; quantity 0 means Not For Sale", () => {
     load("header-in", "edit-select");
-    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toMatchObject({ kind: "wait", phase: "saved" });
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toEqual({ kind: "wait", phase: "check", ms: 600 });
     expect((document.getElementById("qty") as HTMLInputElement).value).toBe("3");
+    expect(clicked).toEqual([]); // Update only after the value is checked
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 }, "check")).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    expect(clicked).toEqual(["Update"]);
     load("header-in", "edit-select");
     expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 1 })).toMatchObject({ kind: "done", result: { alreadyDone: true } });
     step("updateQuantity", U.edit, { externalId: ID, quantity: 0 });
@@ -159,7 +162,8 @@ describe("updateQuantity / updateListing / createListing", () => {
   });
   it("updateListing changes only the given fields, never the original price", () => {
     load("header-in", "edit-select");
-    expect(step("updateListing", U.edit, { externalId: ID, price: 22, title: "Nike Polo L" })).toMatchObject({ kind: "wait", phase: "saved" });
+    expect(step("updateListing", U.edit, { externalId: ID, price: 22, title: "Nike Polo L" })).toMatchObject({ kind: "wait", phase: "price" });
+    expect(step("updateListing", U.edit, { externalId: ID, price: 22, title: "Nike Polo L" }, "price")).toMatchObject({ kind: "wait", phase: "saved" }); // no price window here
     expect((document.getElementById("lp") as HTMLInputElement).value).toBe("22");
     expect((document.getElementById("op") as HTMLInputElement).value).toBe("60");
     expect((document.getElementById("title") as HTMLInputElement).value).toBe("Nike Polo L");
@@ -186,6 +190,19 @@ describe("getSales / getListings", () => {
     expect(r).toMatchObject({ kind: "done", nextCursor: "2026-10-17T00:00:00.000Z" });
     expect((r as { sales: unknown[] }).sales).toHaveLength(2);
     expect(parseSales(document, "2026-10-18T10:00:00.000Z", 50)).toMatchObject({ nextCursor: null });
+  });
+  it("tolerant sales-page detection (the live 'Expected your sales page, got other'): variants, sold closet view, one retry, then the path", () => {
+    for (const u of ["https://poshmark.com/order/sales", "https://poshmark.com/order/sales/", "https://poshmark.com/order/sales?type=sold", "https://poshmark.com/ORDER/SALES",
+      "https://poshmark.com/sales", "https://poshmark.com/my-sales", "https://poshmark.com/account/sales", "https://poshmark.com/closet/davidsells?availability=sold_out"])
+      expect(pageOf(u), u).toBe("sales");
+    expect(pageOf("https://poshmark.com/closet/davidsells")).toBe("closet");
+    expect(pageOf("https://poshmark.com/listing/sales-tee-a1b2c3d4e5f6a1b2c3d4e5f6")).toBe("listing");
+    load("header-in", "sales");
+    expect(step("getSales", "https://poshmark.com/order/sales/", {})).toMatchObject({ kind: "done", loggedIn: true });
+    document.body.innerHTML = "<main><h1>My Sales</h1></main>"; // header not readable: still fine (signed out would be /login)
+    expect(step("getSales", U.sales, {})).toMatchObject({ kind: "done", sales: [] });
+    expect(step("getSales", "https://poshmark.com/somewhere-else", {})).toEqual({ kind: "goto", page: "sales", phase: "again" });
+    expect(step("getSales", "https://poshmark.com/somewhere-else", {}, "again")).toMatchObject({ kind: "stop", code: "unexpected_page", message: expect.stringContaining("/somewhere-else") });
   });
   it("signed out on the sales page stops", () => {
     load("header-out", "sales");
@@ -231,11 +248,14 @@ describe("real Poshmark edit page (scrubbed fixture)", () => {
 
   it("updateListing: sets title / price by their data-vv-name, presses Update, then confirms on a fresh edit page", () => {
     real();
-    expect(step("updateListing", U.edit, { externalId: ID, price: 25, title: "Black jeans W32 L30" })).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    const P = { externalId: ID, price: 25, title: "Black jeans W32 L30" };
+    expect(step("updateListing", U.edit, P)).toEqual({ kind: "wait", phase: "price", ms: 800 });
     expect(val('input[data-vv-name="listingPrice"]')).toBe("25");
     expect(val('input[data-vv-name="originalPrice"]')).toBe("60");
     expect(val('input[data-vv-name="title"]')).toBe("Black jeans W32 L30");
-    expect(clicked).toEqual(["Update"]);
+    expect(clicked).not.toContain("Update");
+    expect(step("updateListing", U.edit, P, "price")).toEqual({ kind: "wait", phase: "saved", ms: 5000 }); // no Listing Price window opened
+    expect(clicked.at(-1)).toBe("Update");
     // still on the edit page, no message: wait once more, then stop and leave the tab open
     expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "saved")).toEqual({ kind: "wait", phase: "saved2", ms: 5000 });
     expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "saved2")).toMatchObject({ kind: "stop", code: "unexpected_page", keepTab: true });
@@ -248,6 +268,62 @@ describe("real Poshmark edit page (scrubbed fixture)", () => {
     expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "verify")).toMatchObject({ kind: "stop", code: "unexpected_page", message: expect.stringContaining("price") });
     real({ price: "" });
     expect(step("updateListing", U.edit, { externalId: ID, price: 25 }, "verify")).toEqual({ kind: "wait", phase: "verify2", ms: 1500 }); // still loading
+  });
+
+  it("price via the Listing Price window (Smart Sell): types digits only, checks it stuck, presses Done, checks the form, then Update", () => {
+    real();
+    const P = { externalId: ID, price: 25 };
+    // Like the live page: clicking the Listing Price box opens the window and the form box is cleared (David's screenshot).
+    const main = document.querySelector<HTMLInputElement>('input[data-vv-name="listingPrice"]')!;
+    const box = document.querySelector<HTMLInputElement>("#listing-price-modal-listing-price-input")!;
+    const win = box.closest('[data-test="modal-container"]')!;
+    main.addEventListener("click", () => { win.classList.add("modal--in"); });
+    const done = Array.from(win.querySelectorAll("button")).find((b) => /Done/.test(b.textContent!))!;
+    done.addEventListener("click", () => { main.value = box.value; win.classList.remove("modal--in"); });
+    expect(step("updateListing", U.edit, P)).toEqual({ kind: "wait", phase: "price", ms: 800 });
+    main.value = ""; // the window took over
+    expect(step("updateListing", U.edit, P, "price")).toEqual({ kind: "wait", phase: "pricedone", ms: 600 });
+    expect(box.value).toBe("25"); // "25", never "$25.00"
+    expect(step("updateListing", U.edit, P, "pricedone")).toEqual({ kind: "wait", phase: "check", ms: 800 });
+    expect(clicked.at(-1)).toBe("Done");
+    expect(main.value).toBe("25");
+    expect(step("updateListing", U.edit, P, "check")).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    expect(clicked.at(-1)).toBe("Update");
+  });
+
+  it("never presses Update when the price did not stick: empty box, window error, or a bad price -> stops for you", () => {
+    const P = { externalId: ID, price: 25 };
+    // 1) the form box is empty after typing (the live bug): stop, nothing saved, no Update
+    real();
+    step("updateListing", U.edit, P);
+    document.querySelector<HTMLInputElement>('input[data-vv-name="listingPrice"]')!.value = "";
+    clicked = [];
+    expect(step("updateListing", U.edit, P, "price")).toMatchObject({ kind: "stop", code: "unexpected_page", keepTab: true, message: expect.stringMatching(/price did not stick.*Nothing was saved/) });
+    expect(clicked).toEqual([]);
+    // 2) the window shows "Enter a listing price to continue": stop before Done
+    real();
+    const box = document.querySelector<HTMLInputElement>("#listing-price-modal-listing-price-input")!;
+    const win = box.closest('[data-test="modal-container"]')!;
+    win.classList.add("modal--in");
+    expect(step("updateListing", U.edit, P, "price")).toEqual({ kind: "wait", phase: "pricedone", ms: 600 });
+    box.value = "";
+    Array.from(win.querySelectorAll<HTMLElement>(".form__error-message")).find((e) => /Enter a listing price/.test(e.textContent!))!.style.display = "block";
+    clicked = [];
+    expect(step("updateListing", U.edit, P, "pricedone")).toMatchObject({ kind: "stop", code: "unexpected_page", message: expect.stringMatching(/did not stick.*Enter a listing price/) });
+    expect(clicked).toEqual([]);
+    // 3) a visible "Invalid Price" on the form at the check: stop
+    real();
+    Array.from(document.querySelectorAll<HTMLElement>(".form__error-message")).find((e) => /Invalid Price/.test(e.textContent!) && !e.closest('[data-test="modal-container"]'))!.style.display = "block";
+    expect(step("updateListing", U.edit, { externalId: ID, price: 20 }, "check")).toMatchObject({ kind: "stop", message: expect.stringContaining("Invalid Price") });
+    // 4) prices Poshmark can't take: never typed
+    real();
+    for (const price of [2, 25.5, "abc"]) expect(step("updateListing", U.edit, { externalId: ID, price })).toMatchObject({ kind: "stop", code: "invalid_payload" });
+    expect(val('input[data-vv-name="listingPrice"]')).toBe("20");
+  });
+
+  it("an old queued 'Set quantity to 2' on a Single Item listing goes to needs-you with a clear message", () => {
+    real();
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 2, previous: { quantity: 1 } })).toMatchObject({ kind: "stop", code: "unexpected_page", message: expect.stringMatching(/Single Item listing.*To sell 2.*Multi Item/) });
   });
 
   it("a modal after Update (e.g. 'Problem Detected') or a shown field error stops with Poshmark's words", () => {
@@ -269,8 +345,9 @@ describe("real Poshmark edit page (scrubbed fixture)", () => {
     one.className = "btn btn--tertiary"; many.className = "btn btn--primary";
     expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toMatchObject({ kind: "stop", message: expect.stringMatching(/Multi Item listing, but no quantity box/) });
     many.insertAdjacentHTML("afterend", '<input type="text" data-vv-name="quantity" value="1">');
-    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 })).toEqual({ kind: "wait", phase: "check", ms: 600 });
     expect(val('input[data-vv-name="quantity"]')).toBe("3");
+    expect(step("updateQuantity", U.edit, { externalId: ID, quantity: 3 }, "check")).toEqual({ kind: "wait", phase: "saved", ms: 5000 });
     expect(clicked).toEqual(["Update"]);
   });
 

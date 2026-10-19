@@ -16,6 +16,14 @@ const ID = "a1b2c3d4e5f6a1b2c3d4e5f6";
 const job = (o: Record<string, unknown> = {}) => ({ jobId: "11111111-1111-4111-8111-111111111111", marketplace: "poshmark", action: "delist", payload: { externalId: ID }, leaseExpiresAt: null, attempt: 0, ...o });
 
 describe("one-click pairing message path", () => {
+  it("speed setting (Settings > Extension): only from our origin, only normal / careful for a known marketplace", () => {
+    expect(parseExternal({ type: "speed", marketplace: "poshmark", speed: "careful" }, page, cfg)).toEqual({ ok: true, req: { type: "speed", marketplace: "poshmark", speed: "careful" } });
+    expect(parseExternal({ type: "speed", marketplace: "poshmark", speed: "normal" }, { origin: "https://evil.example" }, cfg)).toEqual({ ok: false, reason: "foreign_origin" });
+    expect(parseExternal({ type: "speed", marketplace: "poshmark", speed: "turbo" }, page, cfg).ok).toBe(false);
+    expect(parseExternal({ type: "speed", marketplace: "ebay", speed: "normal" }, page, cfg).ok).toBe(false);
+    expect(parseExternal({ type: "speed", speed: "normal" }, page, cfg).ok).toBe(false);
+    expect(parseExternal({ type: "status", speed: "normal" }, page, cfg).ok).toBe(false);
+  });
   it("the one-time code is accepted only from our own origin; foreign, look-alike, http, other-extension and origin-less senders are refused", () => {
     expect(parseExternal({ type: "pair", code: "ABCD-EFGH" }, { url: "https://shadowsync-ruby.vercel.app/settings/extension?ext=x" }, cfg)).toEqual({ ok: true, req: { type: "pair", code: "ABCD-EFGH" } });
     expect(parseExternal({ type: "pair", code: "ABCD-EFGH" }, { origin: "https://shadowsync-ruby.vercel.app" }, cfg).ok).toBe(true);
@@ -102,16 +110,17 @@ describe("message allow-list", () => {
 describe("pacing and kill switch", () => {
   const T = new Date(2026, 9, 18, 10, 0, 0).getTime();
   const S = 1000, MIN = 60 * S;
-  it("one job at a time per marketplace, then a random 20-90 s gap", () => {
+  it("one job at a time per marketplace, then a random 2-10 s gap (Careful: 20-90 s)", () => {
     let s = P.emptyPacing();
     expect(P.canRun(s, "poshmark", "delist", T).ok).toBe(true);
     s = P.begin(s, "poshmark", "delist", T);
     expect(P.canRun(s, "poshmark", "delist", T + S)).toMatchObject({ ok: false, reason: expect.stringMatching(/Another job/) });
     expect(P.canRun(s, "depop", "delist", T + S).ok).toBe(true); // other marketplaces are independent
     s = P.finish(s, "poshmark", { ok: true }, T + 10 * S, 0.5);
-    expect(P.canRun(s, "poshmark", "delist", T + 30 * S).ok).toBe(false);
-    expect(P.canRun(s, "poshmark", "delist", T + 10 * S + 56 * S).ok).toBe(true);
-    expect(P.gapMs(0)).toBe(20 * S); expect(P.gapMs(0.9999999)).toBeLessThanOrEqual(90 * S); expect(P.gapMs(5)).toBeLessThanOrEqual(90 * S);
+    expect(P.canRun(s, "poshmark", "delist", T + 15 * S).ok).toBe(false);
+    expect(P.canRun(s, "poshmark", "delist", T + 10 * S + 6 * S).ok).toBe(true);
+    expect(P.gapMs(0)).toBe(2 * S); expect(P.gapMs(0.9999999)).toBeLessThanOrEqual(10 * S); expect(P.gapMs(5)).toBeLessThanOrEqual(10 * S);
+    expect(P.gapMs(0, "careful")).toBe(20 * S); expect(P.gapMs(5, "careful")).toBeLessThanOrEqual(90 * S);
     expect(P.readiness(P.begin(P.emptyPacing(), "poshmark", "delist", T), "poshmark", T + 16 * MIN).ok).toBe(true); // stale busy flag
   });
   it("daily caps per action reset at local midnight", () => {

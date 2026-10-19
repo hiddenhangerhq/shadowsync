@@ -4,7 +4,7 @@
 import { HOST_TABLE, EXT_MARKETPLACES, type ExtMarketplace, type ResultCode } from "../../src/lib/ext/protocol";
 import { validateAction } from "./handler";
 import { actionLabel } from "../../src/lib/jobs/labels";
-import { begin, canRun, clearErrorBursts, emptyPacing, finish, isReady, readiness, setDevicePaused, setMarketplacePaused, type PacingState } from "./pacing";
+import { begin, canRun, clearErrorBursts, emptyPacing, finish, isReady, readiness, refitSpeeds, setDevicePaused, setMarketplacePaused, setSpeed, type PacingState, type Speed } from "./pacing";
 import { runAction, type Browser, type RunOutcome } from "./runner";
 import { ApiError, type Api } from "./api";
 
@@ -209,7 +209,7 @@ export async function upgrade(d: Deps) {
   if (s.upgradedTo === d.version) return false;
   await update(d, (st) => {
     const had = Object.values(st.pacing.mp).some((r) => (r?.pausedUntil ?? 0) > d.now() || (r?.errors.length ?? 0) > 0);
-    st.pacing = clearErrorBursts(st.pacing);
+    st.pacing = refitSpeeds(clearErrorBursts(st.pacing), d.now()); // 1.0.4: drop leftover long breaks / gaps from the slower 1.0.3 pace
     st.upgradedTo = d.version;
     if (had) addLog(st, d.now(), `Updated to ${d.version}: cleared the automatic error pause`);
   });
@@ -218,3 +218,22 @@ export async function upgrade(d: Deps) {
 
 export const pauseMarketplace = (d: Deps, m: ExtMarketplace, paused: boolean) =>
   update(d, (s) => { s.pacing = setMarketplacePaused(s.pacing, m, paused, d.now()); addLog(s, d.now(), `${paused ? "Paused" : "Resumed"} ${HOST_TABLE[m].label}`); });
+/** Speed for one marketplace on this browser (Settings > Extension). */
+export const setMarketplaceSpeed = (d: Deps, m: ExtMarketplace, speed: Speed) =>
+  update(d, (s) => { s.pacing = setSpeed(s.pacing, m, speed, d.now()); addLog(s, d.now(), `${HOST_TABLE[m].label}: speed set to ${speed === "careful" ? "Careful" : "Normal"}`); });
+/** How soon the next job could run on any connected marketplace (ms; Infinity = not soon: paused, signed out, nothing connected).
+ *  After a poll that ran jobs, the background polls again then, so a queue runs back to back at the pacing gap (2-10 s) instead of
+ *  waiting for the 5-minute alarm. */
+export async function nextWakeMs(d: Deps): Promise<number> {
+  const s = await d.store.load();
+  if (!s.token || s.pacing.devicePaused) return Infinity;
+  const now = d.now();
+  let best = Infinity;
+  for (const m of await connected(d)) {
+    if (signedOut(s, m)) continue;
+    const v = readiness(s.pacing, m, now);
+    if (v.ok || v.urgentOk) return 0;
+    if (v.spacing && v.until) best = Math.min(best, Math.max(0, v.until - now));
+  }
+  return best;
+}
