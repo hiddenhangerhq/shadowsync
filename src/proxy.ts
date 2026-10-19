@@ -9,6 +9,10 @@ export async function proxy(req: NextRequest) {
   const { response, signedIn } = await proxySession(req);
   const { pathname } = req.nextUrl;
   const isPublic = PUBLIC.some((p) => pathname === p);
+  // The worker endpoint has no user: it is protected by CRON_SECRET inside the route instead.
+  if (pathname.startsWith("/api/cron/")) return response ?? NextResponse.next();
+  // The JSON API answers 401 instead of redirecting to the login page.
+  if (!signedIn && pathname.startsWith("/api/v1/")) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   if (!signedIn && !isPublic) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";

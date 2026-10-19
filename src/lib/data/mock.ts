@@ -5,18 +5,24 @@ import fs from "node:fs";
 import path from "node:path";
 import type { CookieJar, DataStore, Services, StorageService, AuthService } from "./interfaces";
 import {
-  CREDIT_COSTS, InsufficientCreditsError, ITEM_STATUSES, PLAN_ALLOWANCE, SOURCE_PRIORITY,
-  type AuthUser, type CreditEntry, type Item, type ItemStatus, type Listing,
-  type MarketplaceConnection, type Photo, type Profile, type Sale, type SyncLogEntry,
+  CREDIT_COSTS, InsufficientCreditsError, ITEM_STATUSES, JOB_STATUSES, PLAN_ALLOWANCE, SOURCE_PRIORITY,
+  type AuthUser, type CreditEntry, type ExtensionDevice, type Item, type ItemStatus, type ItemSyncLogEntry, type Job, type JobEvent, type Listing,
+  type MarketplaceConnection, type MarketplaceLoginState, type Photo, type Profile, type Sale, type ScanCursor, type SyncLogEntry,
 } from "./types";
+import * as sm from "../jobs/state-machine";
+import { makeNeedsAction } from "../jobs/store-helpers";
 
 interface MockUser { id: string; email: string; salt: string; hash: string }
+type MockDevice = ExtensionDevice & { tokenHash: string };
 interface Tables {
   users: MockUser[]; profiles: Profile[]; items: Item[]; photos: Photo[]; listings: Listing[];
   sales: Sale[]; connections: MarketplaceConnection[]; syncLog: SyncLogEntry[]; credits: CreditEntry[];
+  jobs: Job[]; jobEvents: JobEvent[]; devices: MockDevice[]; loginState: (MarketplaceLoginState & { userId: string })[];
+  cursors: ScanCursor[]; itemSyncLog: ItemSyncLogEntry[]; worker: { lastRunAt: string | null };
 }
 const emptyTables = (): Tables => ({
   users: [], profiles: [], items: [], photos: [], listings: [], sales: [], connections: [], syncLog: [], credits: [],
+  jobs: [], jobEvents: [], devices: [], loginState: [], cursors: [], itemSyncLog: [], worker: { lastRunAt: null },
 });
 
 export const MOCK_COOKIE = "ss_mock_session";
@@ -126,7 +132,36 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
     db.t.credits.push({ id: randomUUID(), createdAt: now(), ...c });
   };
 
-  return {
+  // Log events are stamped with the real write time (like the database default), not the injected `now` the state rules use.
+  const logEvent = (j: Job, from: Job["status"] | null, to: Job["status"], message: string) => {
+    db.t.jobEvents.push({ id: randomUUID(), jobId: j.id, userId: j.userId, at: now(), fromStatus: from, toStatus: to, message });
+  };
+  const applyTransition = (j: Job, t: sm.Transition) => {
+    Object.assign(j, t.patch);
+    logEvent(j, t.event.fromStatus, t.event.toStatus, t.event.message);
+  };
+  const ownJob = async (id: string) => {
+    const j = (await mine(db.t.jobs)).find((x) => x.id === id);
+    if (!j) throw new Error("Job not found");
+    return j;
+  };
+  const publicDevice = ({ tokenHash, ...d }: MockDevice): ExtensionDevice => (void tokenHash, { ...d });
+  const ownDevice = async (id: string) => {
+    const d = (await mine(db.t.devices)).find((x) => x.id === id);
+    if (!d) throw new Error("Device not found");
+    return d;
+  };
+  const cursorRow = async (marketplace: ScanCursor["marketplace"], scopeKey: string) => {
+    const userId = await uid();
+    let c = db.t.cursors.find((x) => x.userId === userId && x.marketplace === marketplace && x.scopeKey === scopeKey);
+    if (!c) {
+      c = { id: randomUUID(), userId, marketplace, scopeKey, cursor: null, lastScannedAt: null, lastSuccessAt: null, lastError: null, createdAt: now() };
+      db.t.cursors.push(c);
+    }
+    return c;
+  };
+
+  const store: DataStore = {
     profile: {
       async get() { const id = await uid(); return db.t.profiles.find((p) => p.id === id) ?? null; },
       async update(patch) {
@@ -165,7 +200,11 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
         const userId = await uid();
         db.t.items = db.t.items.filter((i) => !(i.userId === userId && i.id === id));
         db.t.photos = db.t.photos.filter((p) => !(p.userId === userId && p.itemId === id));
-        db.t.listings = db.t.listings.filter((l) => !(l.userId === userId && l.itemId === id));
+        const gone = new Set(db.t.listings.filter((l) => l.userId === userId && l.itemId === id).map((l) => l.id));
+        db.t.listings = db.t.listings.filter((l) => !gone.has(l.id));
+        // Same as the database: history rows keep existing, they just lose the link (on delete set null).
+        for (const j of db.t.jobs) { if (j.itemId === id) j.itemId = null; if (j.listingId && gone.has(j.listingId)) j.listingId = null; }
+        for (const e of db.t.itemSyncLog) { if (e.itemId === id) e.itemId = null; if (e.listingId && gone.has(e.listingId)) e.listingId = null; }
         db.save();
       },
       async countsByStatus() {
@@ -201,6 +240,7 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
     },
     listings: {
       async listForItem(itemId) { return (await mine(db.t.listings)).filter((l) => l.itemId === itemId).map((l) => ({ ...l })); },
+      async list(filter) { return (await mine(db.t.listings)).filter((l) => !filter?.status || l.status === filter.status).map((l) => ({ ...l })); },
       async upsert(input) {
         const userId = await uid();
         let l = db.t.listings.find((x) => x.userId === userId && x.itemId === input.itemId && x.marketplace === input.marketplace);
@@ -263,6 +303,130 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
         return (await mine(db.t.syncLog)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
       },
     },
+    jobs: {
+      async list(f) {
+        const statuses = f?.status === undefined ? null : Array.isArray(f.status) ? f.status : [f.status];
+        const r = (await mine(db.t.jobs))
+          .filter((j) => (!statuses || statuses.includes(j.status)) && (!f?.itemId || j.itemId === f.itemId) && (!f?.listingId || j.listingId === f.listingId))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+        return (f?.limit ? r.slice(0, f.limit) : r).map((j) => ({ ...j }));
+      },
+      async get(id) { const j = (await mine(db.t.jobs)).find((x) => x.id === id); return j ? { ...j } : null; },
+      async events(jobIds) {
+        const ids = new Set(jobIds);
+        return (await mine(db.t.jobEvents)).filter((e) => ids.has(e.jobId)).sort((a, b) => a.at.localeCompare(b.at)).map((e) => ({ ...e }));
+      },
+      async enqueue(input) {
+        const userId = await uid();
+        const dup = sm.findOpenDuplicate(db.t.jobs.filter((j) => j.userId === userId), input.idempotencyKey);
+        if (dup) return { job: { ...dup }, created: false };
+        if (input.itemId && !db.t.items.some((i) => i.id === input.itemId && i.userId === userId)) throw new Error("Item not found");
+        if (input.listingId && !db.t.listings.some((l) => l.id === input.listingId && l.userId === userId)) throw new Error("Listing not found");
+        const j = sm.buildNewJob(input, { id: randomUUID(), userId }, new Date());
+        db.t.jobs.push(j);
+        logEvent(j, null, "queued", "Queued");
+        return { job: commit({ ...j }), created: true };
+      },
+      async claim({ executor, deviceId = null, limit = 1, now = new Date() }) {
+        const userId = await uid();
+        if (deviceId) {
+          const d = db.t.devices.find((x) => x.id === deviceId && x.userId === userId);
+          if (!d || d.revokedAt || d.paused) return [];
+        }
+        const picked = sm.pickClaimable(db.t.jobs.filter((j) => j.userId === userId), executor, now, limit);
+        for (const j of picked) applyTransition(j, sm.claim(j, deviceId, now));
+        db.save();
+        return picked.map((j) => ({ ...j }));
+      },
+      async start(id, now = new Date()) { const j = await ownJob(id); applyTransition(j, sm.start(j, now)); return commit({ ...j }); },
+      async extendLease(id, now = new Date()) { const j = await ownJob(id); applyTransition(j, sm.extendLease(j, now)); return commit({ ...j }); },
+      async complete(id, outcome, now = new Date()) { const j = await ownJob(id); applyTransition(j, sm.applyOutcome(j, outcome, now)); return commit({ ...j }); },
+      async retry(id, now = new Date()) { const j = await ownJob(id); applyTransition(j, sm.manualRetry(j, now)); return commit({ ...j }); },
+      async cancel(id, now = new Date()) { const j = await ownJob(id); applyTransition(j, sm.cancel(j, now)); return commit({ ...j }); },
+      async counts() {
+        const c = Object.fromEntries(JOB_STATUSES.map((s) => [s, 0])) as Record<(typeof JOB_STATUSES)[number], number>;
+        for (const j of await mine(db.t.jobs)) c[j.status]++;
+        return c;
+      },
+    },
+    devices: {
+      async list() { return (await mine(db.t.devices)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(publicDevice); },
+      async register({ label, tokenHash }) {
+        const userId = await uid();
+        if (db.t.devices.some((d) => d.tokenHash === tokenHash)) throw new Error("Device token already registered");
+        const d: MockDevice = { id: randomUUID(), userId, label, tokenHash, extensionVersion: null, createdAt: now(), lastSeenAt: null, lastPollAt: null, lastIpCountry: null, revokedAt: null, paused: false };
+        db.t.devices.push(d);
+        return commit(publicDevice(d));
+      },
+      async heartbeat(id, input = {}) {
+        const d = await ownDevice(id);
+        if (d.revokedAt) throw new Error("Device revoked");
+        const at = (input.now ?? new Date()).toISOString();
+        d.lastSeenAt = at;
+        if (input.poll !== false) d.lastPollAt = at;
+        if (input.extensionVersion) d.extensionVersion = input.extensionVersion;
+        if (input.ipCountry !== undefined) d.lastIpCountry = input.ipCountry;
+        for (const [mp, loggedIn] of Object.entries(input.marketplaces ?? {}) as [MarketplaceLoginState["marketplace"], boolean][]) {
+          const cur = db.t.loginState.find((x) => x.deviceId === id && x.marketplace === mp);
+          if (cur) { cur.loggedIn = loggedIn; cur.checkedAt = at; } else db.t.loginState.push({ userId: d.userId, deviceId: id, marketplace: mp, loggedIn, checkedAt: at });
+        }
+        return commit(publicDevice(d));
+      },
+      async setPaused(id, paused) { const d = await ownDevice(id); d.paused = paused; return commit(publicDevice(d)); },
+      async revoke(id) { const d = await ownDevice(id); d.revokedAt ??= now(); return commit(publicDevice(d)); },
+      async marketplaceState() {
+        return (await mine(db.t.loginState)).map(({ userId, ...rest }) => (void userId, rest));
+      },
+    },
+    cursors: {
+      async list() { return (await mine(db.t.cursors)).map((c) => ({ ...c })); },
+      async get(marketplace, scopeKey = "default") {
+        const c = (await mine(db.t.cursors)).find((x) => x.marketplace === marketplace && x.scopeKey === scopeKey);
+        return c ? { ...c } : null;
+      },
+      async advance({ marketplace, scopeKey = "default", cursor, now: at = new Date() }) {
+        const c = await cursorRow(marketplace, scopeKey);
+        c.cursor = cursor; c.lastScannedAt = at.toISOString(); c.lastSuccessAt = at.toISOString(); c.lastError = null;
+        return commit({ ...c });
+      },
+      async fail({ marketplace, scopeKey = "default", error, now: at = new Date() }) {
+        const c = await cursorRow(marketplace, scopeKey);
+        c.lastScannedAt = at.toISOString(); c.lastError = error;
+        return commit({ ...c });
+      },
+    },
+    itemSyncLog: {
+      async append(entry) {
+        const userId = await uid();
+        if (entry.itemId && !db.t.items.some((i) => i.id === entry.itemId && i.userId === userId)) throw new Error("Item not found");
+        const e: ItemSyncLogEntry = { id: randomUUID(), userId, at: now(), itemId: null, listingId: null, marketplace: null, jobId: null, detail: null, ref: null, ...entry };
+        db.t.itemSyncLog.push(e);
+        return commit({ ...e });
+      },
+      async list(f) {
+        const r = (await mine(db.t.itemSyncLog))
+          .filter((e) => (!f?.itemId || e.itemId === f.itemId) && (!f?.event || e.event === f.event))
+          .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
+        return (f?.limit ? r.slice(0, f.limit) : r).map((e) => ({ ...e }));
+      },
+    },
+    needsAction: makeNeedsAction(() => store),
+    worker: {
+      async run(at = new Date()) {
+        // Time-driven transitions for EVERY user's jobs, no sign-in needed (mirrors job_maintenance() in 0005).
+        let leasesExpired = 0, requeued = 0;
+        for (const j of db.t.jobs) {
+          const exp = sm.expireLease(j, at);
+          if (exp) { applyTransition(j, exp); leasesExpired++; continue; }
+          const due = sm.requeueIfDue(j, at);
+          if (due) { applyTransition(j, due); requeued++; }
+        }
+        db.t.worker.lastRunAt = at.toISOString();
+        db.save();
+        return { leasesExpired, requeued, ranAt: db.t.worker.lastRunAt };
+      },
+      async lastRun() { await uid(); return db.t.worker.lastRunAt; },
+    },
     creditLedger: {
       async balance() { return balanceFor(await uid()); },
       async entries(limit = 50) {
@@ -295,6 +459,7 @@ function makeStore(db: MockDb, auth: AuthService): DataStore {
       },
     },
   };
+  return store;
 }
 
 function makeStorage(db: MockDb, auth: AuthService): StorageService {

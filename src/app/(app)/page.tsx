@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { getServices, type Item } from "@/lib/data";
 import StatusBar from "@/components/StatusBar";
+import StatusBanner from "@/components/StatusBanner";
+import NeedsActionPanel from "@/components/NeedsActionPanel";
+import { loadOverview } from "@/lib/jobs/overview";
 import { brandColor } from "@/lib/brands";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +14,9 @@ export default async function MissionControl() {
   const [counts, recent, profile, log, toShip] = await Promise.all([
     store.items.countsByStatus(), store.items.list({ limit: 4 }), store.profile.get(), store.syncLog.recent(3), store.sales.listToShip(),
   ]);
+  // Never throws: if the 0005 tables are missing this is just { ready: false } and the rest of the page is unchanged.
+  const queue = await loadOverview(store, new Date(), Number(process.env.WORKER_STALE_MINUTES) || undefined);
+  const attention = queue.counts ? queue.counts.failed + queue.counts.needs_user : 0;
   const stat = (href: string, n: number, l: string) => (
     <Link href={href} className="stat"><div className="n">{n}</div><div className="l">{l}</div></Link>
   );
@@ -21,6 +27,9 @@ export default async function MissionControl() {
         <span className="pill gold" title="AI credits left this month">{balance} credits</span>
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>Welcome{profile?.displayName ? `, ${profile.displayName}` : ""}. Everything you need to list, ship and track.</p>
+
+      {queue.health && <StatusBanner health={queue.health} compact />}
+      <NeedsActionPanel entries={queue.needsAction} />
 
       <div className="card glow">
         <div className="grid c3">
@@ -35,6 +44,7 @@ export default async function MissionControl() {
         <Link href="/items/new" className="btn primary">📷 Add item</Link>
         <Link href="/ship" className="btn">🚚 Ship<span className="badge-count">{toShip.length}</span></Link>
         <Link href="/items" className="btn">All items</Link>
+        <Link href="/jobs" className="btn">Jobs{queue.counts && <span className="badge-count">{attention || queue.counts.queued + queue.counts.retry_wait + queue.counts.claimed + queue.counts.running}</span>}</Link>
       </div>
 
       <div className="card">

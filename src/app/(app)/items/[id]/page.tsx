@@ -2,6 +2,8 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getServices } from "@/lib/data";
 import PhotoUploader from "@/components/PhotoUploader";
+import { buildTimeline } from "@/lib/jobs/timeline";
+import { when } from "@/lib/jobs/format";
 import { deleteItemAction, deletePhotoAction, setStatusAction } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +15,13 @@ export default async function ItemPage({ params }: { params: Promise<{ id: strin
   if (!item) notFound();
   const photos = await store.photos.listForItem(id);
   const urls = await Promise.all(photos.map((p) => storage.getUrl(p.path)));
+  // Sync log (spec 6A). If the 0005 tables are missing this stays empty and the page is unchanged.
+  const timeline = await (async () => {
+    try {
+      const [entries, jobs] = await Promise.all([store.itemSyncLog.list({ itemId: id }), store.jobs.list({ itemId: id })]);
+      return buildTimeline(entries, jobs, await store.jobs.events(jobs.map((j) => j.id)));
+    } catch { return null; }
+  })();
   const rows: [string, string | number | null][] = [
     ["SKU", item.sku], ["COGS", item.cogs], ["Purchased at", item.purchaseLocation], ["Category", item.category],
     ["Platform", item.platform], ["Asking", item.askingPrice], ["Listed", item.dateListed], ["Sold", item.dateSold], ["Price sold", item.priceSold],
@@ -42,6 +51,23 @@ export default async function ItemPage({ params }: { params: Promise<{ id: strin
           <div key={k} className="row between small" style={{ padding: "4px 0" }}><span className="muted">{k}</span><span>{v}</span></div>
         ))}
       </div>
+      {timeline && (
+        <div className="card">
+          <h2>Sync log</h2>
+          {timeline.length === 0 && <span className="muted small">Nothing has happened on any marketplace yet.</span>}
+          <ul className="tl">
+            {timeline.map((r, n) => (
+              <li key={n}>
+                <span className="when">{when(r.at)}</span>
+                <span className="small">
+                  <b>{r.label}</b>{r.marketplace && <span className="muted"> · {r.marketplace}</span>}{r.source && <span className="muted"> · {r.source}</span>}
+                  {r.detail && <div className="muted">{r.detail}</div>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="card">
         <h2>Move to</h2>
         <div className="row" style={{ flexWrap: "wrap" }}>

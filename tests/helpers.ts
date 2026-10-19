@@ -55,6 +55,18 @@ export function testAccount(idx: 0 | 1) {
   return { email, password };
 }
 
+const MISSING = new Set(["42P01", "PGRST205"]);
+/** True when the 0005 job-queue tables exist on the real project (probes with a signed-in test account). */
+export async function jobTablesExist(): Promise<boolean> {
+  const { email, password } = testAccount(0);
+  const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, { auth: { persistSession: false } });
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) return false;
+  const probes = await Promise.all(["jobs", "job_events", "extension_devices", "extension_marketplace_state", "sales_scan_cursors", "item_sync_log", "worker_state"].map((t) => sb.from(t).select("*").limit(1)));
+  await sb.auth.signOut();
+  return probes.every((r) => !r.error);
+}
+
 /** Delete everything the user can delete through RLS so each test starts empty. Credit ledger rows can't be deleted by users (by design). */
 export async function wipeSupabaseUser(idx: 0 | 1) {
   const { email, password } = testAccount(idx);
@@ -67,6 +79,12 @@ export async function wipeSupabaseUser(idx: 0 | 1) {
     const sub = await sb.storage.from(bucket).list(`${data.user.id}/${f.name}`, { limit: 1000 });
     const paths = (sub.data ?? []).map((o) => `${data.user.id}/${f.name}/${o.name}`);
     if (paths.length) await sb.storage.from(bucket).remove(paths);
+  }
+  // 0005 tables first (they reference items). They may not exist yet if migration 0005 has not been run: that is fine.
+  // item_sync_log and job_events are append-only for users, so they cannot be wiped (job_events go with their job by cascade).
+  for (const t of ["jobs", "extension_devices", "sales_scan_cursors"]) {
+    const r = await sb.from(t).delete().not("id", "is", null);
+    if (r.error && !MISSING.has(r.error.code ?? "")) throw new Error(`wipe ${t}: ${r.error.message}`);
   }
   for (const t of ["sales", "sync_log", "marketplace_connections", "items"]) {
     const r = await sb.from(t).delete().not("id", "is", null);

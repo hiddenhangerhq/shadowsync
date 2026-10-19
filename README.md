@@ -83,3 +83,10 @@ stored through `StorageService` (Supabase Storage bucket `item-photos`, private,
 3. Import the repo into Vercel (free Hobby tier) or deploy with `vercel --prod` using a token.
 4. Run the data-layer contract tests against a Supabase test project (add it to `tests/helpers.ts` `backends`) before trusting the Supabase implementation:
    it type-checks but has not been run against a real project yet.
+
+## Job queue (build step: queue, no marketplace calls)
+- Migration `supabase/migrations/0005_jobs.sql` (also `/workspace/shadowsync-setup-0005.sql`, one paste for the Supabase SQL editor, re-runnable). Run it BEFORE deploying: until then `/jobs`, Mission Control and item pages degrade to "Job queue not set up yet".
+- Pure rules live in `src/lib/jobs/` (state machine, sale detection, needs-action, health, validation). Both data stores obey them.
+- Dashboard API: `/api/v1/jobs`, `/api/v1/jobs/:id` (+ `/retry`, `/cancel`), `/api/v1/needs-action`, `/api/v1/items/:id/sync-log`, `/api/v1/extension/status`.
+- Worker: `GET|POST /api/cron/worker` with `Authorization: Bearer $CRON_SECRET`. Vercel Hobby only allows daily crons, so no schedule is configured in `vercel.json`.
+- Tests: `npm test` (mock + in-process Postgres for the real SQL). Real Supabase run: `RUN_SUPABASE=1 npm test` on **Node 22+** (the job-queue half skips itself until 0005 is applied).

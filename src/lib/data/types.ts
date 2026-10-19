@@ -191,3 +191,152 @@ export class InsufficientCreditsError extends Error {
     super(`Insufficient credits: have ${balance}, need ${cost}`);
   }
 }
+
+// ---------------------------------------------------------------- job queue (spec: job-queue-extension-spec.md sections 2, 3A, 6, 6A)
+
+/** Thrown when a table or function from migration 0005 is missing (David has not run the SQL yet). Pages degrade instead of crashing. */
+export class SchemaMissingError extends Error {
+  constructor(what = "job queue tables") {
+    super(`Not set up yet: ${what} (run migration 0005 in Supabase)`);
+    this.name = "SchemaMissingError";
+  }
+}
+
+export type JobType = "create_listing" | "update_listing" | "delist" | "mark_sold" | "sync_status";
+export const JOB_TYPES: JobType[] = ["create_listing", "update_listing", "delist", "mark_sold", "sync_status"];
+export type JobExecutor = "api" | "extension";
+export const JOB_EXECUTORS: JobExecutor[] = ["api", "extension"];
+export type JobStatus = "queued" | "claimed" | "running" | "succeeded" | "retry_wait" | "failed" | "needs_user" | "canceled";
+export const JOB_STATUSES: JobStatus[] = ["queued", "claimed", "running", "succeeded", "retry_wait", "failed", "needs_user", "canceled"];
+
+export interface Job {
+  id: string;
+  userId: string;
+  itemId: string | null;
+  listingId: string | null;
+  marketplace: Marketplace;
+  jobType: JobType;
+  executor: JobExecutor;
+  status: JobStatus;
+  priority: number;                 // lower runs first
+  payload: Record<string, unknown>;
+  idempotencyKey: string | null;
+  attempts: number;                 // counted when a worker claims the job
+  maxAttempts: number;
+  nextRunAt: string;
+  leaseExpiresAt: string | null;
+  claimedByDevice: string | null;
+  lastError: string | null;
+  lastErrorCode: string | null;
+  result: Record<string, unknown> | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+export interface NewJob {
+  marketplace: Marketplace;
+  jobType: JobType;
+  executor: JobExecutor;
+  itemId?: string | null;
+  listingId?: string | null;
+  payload?: Record<string, unknown>;
+  idempotencyKey?: string | null;
+  /** Defaults from the job type (delist / mark_sold first). */
+  priority?: number;
+  maxAttempts?: number;
+  nextRunAt?: string;
+}
+
+export interface JobEvent {
+  id: string;
+  jobId: string;
+  userId: string;
+  at: string;
+  fromStatus: JobStatus | null;
+  toStatus: JobStatus;
+  message: string | null;
+}
+
+/** What a worker reports for a job it ran. */
+export type JobOutcome =
+  | { kind: "success"; result?: Record<string, unknown> }
+  | { kind: "transient"; code: string; message: string }   // timeout, 5xx, rate limit: retried with backoff
+  | { kind: "hard"; code: string; message: string }        // rejected / validation: failed at once
+  | { kind: "needs_user"; code: string; message: string }; // captcha, signed out, challenge: waits for the user
+
+export interface ExtensionDevice {
+  id: string;
+  userId: string;
+  label: string;
+  extensionVersion: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+  lastPollAt: string | null;
+  lastIpCountry: string | null;
+  revokedAt: string | null;
+  paused: boolean;
+}
+export interface NewDevice { label: string; tokenHash: string }
+export interface HeartbeatInput {
+  extensionVersion?: string;
+  /** Per-marketplace "signed in" yes/no as the extension sees it. Nothing else leaves the browser. */
+  marketplaces?: Partial<Record<Marketplace, boolean>>;
+  ipCountry?: string | null;
+  /** Poll heartbeat (true, default) also stamps last_poll_at. */
+  poll?: boolean;
+  now?: Date;
+}
+export interface MarketplaceLoginState { deviceId: string; marketplace: Marketplace; loggedIn: boolean; checkedAt: string }
+
+export interface ScanCursor {
+  id: string;
+  userId: string;
+  marketplace: Marketplace;
+  scopeKey: string;                 // connection id for API marketplaces, "device:<id>" for the extension
+  cursor: string | null;
+  lastScannedAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
+
+export type ItemSyncEvent =
+  | "listed" | "delisted" | "marked_sold" | "sale_detected" | "sale_unmatched" | "sale_cancelled"
+  | "delist_queued" | "delist_failed" | "relisted" | "linked" | "reconciled" | "needs_action_ignored" | "job_failed";
+export type ItemSyncSource = "api" | "extension" | "reconcile" | "manual";
+export interface ItemSyncLogEntry {
+  id: string;
+  userId: string;
+  itemId: string | null;
+  listingId: string | null;
+  marketplace: Marketplace | null;
+  at: string;
+  event: ItemSyncEvent;
+  source: ItemSyncSource;
+  jobId: string | null;
+  detail: string | null;
+  /** Stable reference such as "sale:<id>", used to ignore a needs-action entry. */
+  ref: string | null;
+}
+export type NewItemSyncLogEntry = Partial<Omit<ItemSyncLogEntry, "id" | "userId" | "at">> & { event: ItemSyncEvent; source: ItemSyncSource };
+
+export interface WorkerRun { leasesExpired: number; requeued: number; ranAt: string }
+
+/** One row of the "Sold but still listed" queue (spec 6A). Computed from data, so it empties itself when the delist is confirmed. */
+export type NeedsActionKind = "sold_still_listed" | "delist_failed" | "delist_stuck" | "unmatched_sale" | "sale_cancelled";
+export type NeedsActionButton = "retry" | "open_listing" | "mark_delisted" | "ignore";
+export interface NeedsActionEntry {
+  key: string;                      // stable; what "Ignore" stores
+  kind: NeedsActionKind;
+  itemId: string | null;
+  sku: string | null;
+  title: string | null;
+  marketplace: Marketplace | null;
+  listingId: string | null;
+  jobId: string | null;
+  url: string | null;
+  since: string;                    // ISO time the problem started
+  overdueMs: number;
+  message: string;
+  actions: NeedsActionButton[];
+}

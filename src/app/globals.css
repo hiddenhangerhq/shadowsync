@@ -159,3 +159,23 @@ label.f .input{margin-top:4px}
 @media (max-width:520px){.nav .brand{display:none}.nav-in{padding:8px 8px;gap:4px}.navlink{padding:8px 10px;font-size:.86rem}.nav-in .navlink:last-child{margin-left:auto}}
 .sku{font-family:var(--font-head);font-weight:800;color:var(--accent);letter-spacing:.04em}
 .late{color:var(--danger);font-weight:700} .soon{color:var(--warn);font-weight:700}
+
+/* ---- job queue: health banner, needs-action list, jobs pages (tokens only) ---- */
+.sb{border:var(--bw) solid var(--border);border-left-width:5px;border-radius:var(--radius);background:var(--surface);padding:8px 12px;margin-bottom:12px;display:grid;gap:6px}
+.sb.green{border-left-color:var(--ok)} .sb.yellow{border-left-color:var(--warn)} .sb.red{border-left-color:var(--danger)}
+.sb-row{display:flex;gap:10px;align-items:flex-start}
+.sb-ic{line-height:1.4} .sb-row.green .sb-ic{color:var(--ok)} .sb-row.yellow .sb-ic{color:var(--warn)} .sb-row.red .sb-ic{color:var(--danger)}
+.na{border-color:var(--danger)}
+.na-row{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:10px 0;border-top:var(--bw) solid var(--border);flex-wrap:wrap}
+.na-row:first-of-type{border-top:0}
+.pill.queued{color:var(--c3)} .pill.claimed,.pill.running{color:var(--accent)} .pill.succeeded{color:var(--ok)}
+.pill.retry_wait,.pill.needs_user{color:var(--warn)} .pill.failed{color:var(--danger)} .pill.canceled{color:var(--text-dim)}
+.pill.late{color:var(--danger)}
+.navlink.alert{color:var(--danger);border-color:var(--danger)}
+.tl{list-style:none;margin:0;padding:0}
+.tl li{display:flex;gap:10px;padding:6px 0;border-top:var(--bw) solid var(--border)}
+.tl li:first-child{border-top:0}
+.tl .when{flex:none;width:7.5em;color:var(--text-dim);font-size:.78rem}
+.jobrow{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.setup{border:var(--bw) dashed var(--warn);border-radius:var(--radius);padding:12px;background:var(--bg-2)}
+.setup b{color:var(--warn)}
