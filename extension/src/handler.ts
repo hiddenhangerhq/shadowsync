@@ -42,7 +42,7 @@ export function parseExternal(msg: unknown, sender: Sender, cfg: HandlerConfig):
 
 // ---------------------------------------------------------------- popup -> background
 const internalSchema = obj({
-  type: oneOf(["state", "pollNow", "pair", "unpair", "pauseDevice", "pauseMarketplace", "connected", "checkLogin"] as const),
+  type: oneOf(["state", "pollNow", "scanNow", "pair", "unpair", "pauseDevice", "pauseMarketplace", "connected", "checkLogin"] as const),
   code: str({ min: 8, max: 12 }), paused: (v, p) => { if (typeof v !== "boolean") throw new SchemaError(p, "must be true or false"); return v; },
   marketplace: oneOf(EXT_MARKETPLACES),
 }, ["code", "paused", "marketplace"]);

@@ -63,6 +63,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     switch (r.type) {
       case "state": return { ok: true, state: redact(await deps.store.load()), connected: await w.connected(deps), apiOrigin: API_ORIGIN, version: EXT_VERSION };
       case "pollNow": return { ok: true, ...(await serial(() => w.poll(deps))) };
+      case "scanNow": return { ok: true, ...(await serial(() => w.scan(deps, { salesOnly: true }))) };
       case "pair": if (!r.code) throw new Error("Enter the code"); return { ok: true, ...(await serial(() => w.pair(deps, r.code!, browserLabel()))) };
       case "unpair": await w.unpair(deps); return { ok: true };
       case "pauseDevice": await w.pauseDevice(deps, r.paused === true); return { ok: true };

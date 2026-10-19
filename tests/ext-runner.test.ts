@@ -171,4 +171,19 @@ describe("worker end to end on the mock API", () => {
     const jobs = await svc.store.jobs.list({});
     expect(jobs.some((j) => j.marketplace === "ebay")).toBe(true);
   });
+  it("Scan sales now (popup): reads the sales page straight away, even when the daily listing scan is due, and says what it saw", async () => {
+    const { svc } = await setup();
+    const today = new Date().toISOString().slice(0, 10);
+    const h = harness(svc, (u) => (u.endsWith("/feed") ? { kind: "done", loggedIn: true } : { kind: "done", loggedIn: true, sales: [{ orderId: "o9", soldAt: today, price: 5 }], nextCursor: null }));
+    expect((await w.scan(h.deps, { salesOnly: true })).notes).toEqual(["Not paired"]);
+    await w.pair(h.deps, String((await pairStart(svc)).body.code), "x");
+    await w.checkLogin(h.deps, "poshmark");
+    h.advance(120_000);
+    const r = await w.scan(h.deps, { salesOnly: true });
+    expect(h.state.listingsScanAt?.poshmark).toBeUndefined();
+    expect(r.notes).toEqual(["Poshmark: sales scan saw 1 sale(s), 1 new, 0 delist(s) queued"]);
+    expect(h.state.log[0].text).toContain("sales scan saw 1");
+    h.advance(120_000);
+    expect((await w.scan(h.deps, { salesOnly: true })).notes[0]).toContain("0 new"); // no duplicates
+  });
 });

@@ -77,5 +77,6 @@ $("pauseDevice").addEventListener("click", async () => {
   void render();
 });
 $("pollNow").addEventListener("click", async () => { say("Checking..."); const r = await send<{ ok: boolean; ran?: number; skipped?: string; error?: string }>({ type: "pollNow" }); say(r.ok ? (r.skipped ? `Skipped: ${r.skipped}` : `${r.ran ?? 0} job(s) run`) : (r.error ?? "")); void render(); });
+$("scanNow").addEventListener("click", async () => { say("Scanning sales..."); const r = await send<{ ok: boolean; notes?: string[]; error?: string }>({ type: "scanNow" }); say(r.ok ? (r.notes?.join(" · ") || "Nothing connected to scan") : (r.error ?? "")); void render(); });
 $("unpair").addEventListener("click", async () => { if (confirm("Unpair this browser? Also revoke it in Settings > Extension.")) { await send({ type: "unpair" }); void render(); } });
 void render();

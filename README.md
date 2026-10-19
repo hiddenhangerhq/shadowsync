@@ -110,6 +110,8 @@ Output: the folder `extension/dist` and the zip `/workspace/shadowsync-extension
 7. In the popup, press **Connect** next to Poshmark and allow the permission the browser asks for (it covers poshmark.com only). Make sure you are signed in to Poshmark in this same browser.
 8. To update later: replace the folder's contents with the new zip, then press the circular **Reload** arrow on the <!--extname-->Shadow Sync Crosslist Extension<!--/extname--> card in the extensions page.
 
+Smoke test (release-checklist section 4): give the item a SKU starting with `TEST` (e.g. TEST-1). Its page then has **Marketplace listings > Link existing listing** (paste the listing link) and a **Test actions** panel: one button per job (quantity, price, title, count listings, Not For Sale, and last "Record test sale & delete listing", which needs you to type DELETE). All go through the normal job queue and relist guard. The popup has **Check sign-in**, **Check now** (run queued jobs) and **Scan sales now**.
+
 When an item sells (a confirmed, matched sale), the extension **deletes** its other listings on those marketplaces (Settings > Extension can switch a marketplace to "Not For Sale" instead). If a delete is blocked, it sets Not For Sale and the item shows under **Sold but still active**. Nothing is ever deleted inside <!--brand-->Shadow Sync<!--/brand-->, and a Sold item can't be listed again until you undo the sale.
 
 To stop everything at once: **Pause all** in the popup, or Pause in Settings > Extension. To remove it: Remove it in Settings > Extension, then click **Remove** on the extensions page.

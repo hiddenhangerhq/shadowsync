@@ -3,7 +3,7 @@
 // 2 security checks in a row, and the kill switch (this browser, or one marketplace) are all enforced here before any tab opens.
 import { HOST_TABLE, EXT_MARKETPLACES, type ExtMarketplace, type ResultCode } from "../../src/lib/ext/protocol";
 import { validateAction } from "./handler";
-import { begin, canRun, emptyPacing, finish, isReady, setDevicePaused, setMarketplacePaused, type PacingState } from "./pacing";
+import { begin, canRun, emptyPacing, finish, isReady, readiness, setDevicePaused, setMarketplacePaused, type PacingState } from "./pacing";
 import { runAction, type Browser, type RunOutcome } from "./runner";
 import { ApiError, type Api } from "./api";
 
@@ -120,14 +120,20 @@ export async function runJob(d: Deps, raw: { jobId: string } & Record<string, un
 }
 
 /** Sales scan: ask the server for the cursor, read the sales page, report. The server dedupes and creates the delists. */
-export async function scan(d: Deps) {
+// salesOnly: the popup's "Scan sales now" (skips the daily listing scan so the press always reads the sales page).
+export async function scan(d: Deps, opts: { salesOnly?: boolean } = {}): Promise<{ notes: string[] }> {
+  const notes: string[] = [];
   const s = await d.store.load();
-  if (!s.token || s.pacing.devicePaused) return;
+  if (!s.token) return { notes: ["Not paired"] };
+  if (s.pacing.devicePaused) return { notes: ["This browser is paused"] };
   for (const m of await connected(d)) {
-    if (!s.logins[m]?.loggedIn || serverPaused(s, m) || !isReady(s.pacing, m, d.now())) continue;
+    const label = HOST_TABLE[m].label;
+    if (!s.logins[m]?.loggedIn) { notes.push(`${label}: not signed in (press Check sign-in)`); continue; }
+    if (serverPaused(s, m)) { notes.push(`${label}: paused`); continue; }
+    if (!isReady(s.pacing, m, d.now())) { notes.push(`${label}: ${((v) => (v.ok ? "not ready" : v.reason))(readiness(s.pacing, m, d.now()))}`); continue; }
     try {
       // Once a day, a listing scan instead: the server flags any item Sold in Shadow Sync that is still live here.
-      if (d.now() - (s.listingsScanAt?.[m] ?? 0) > 24 * 3600_000) {
+      if (!opts.salesOnly && d.now() - (s.listingsScanAt?.[m] ?? 0) > 24 * 3600_000) {
         const r = await runLocal(d, m, "getListings", {});
         if (r.ok) {
           const rep = await d.api.listingsReport(m, r.listingIds ?? []);
@@ -140,11 +146,14 @@ export async function scan(d: Deps) {
       }
       const next = await d.api.scanNext(m);
       const r = await runLocal(d, m, "getSales", { cursor: next.cursor, limit: Math.min(next.limit, 100) });
-      if (!r.ok) continue;
+      if (!r.ok) { notes.push(`${label}: ${"message" in r ? r.message : "scan failed"}`); continue; }
       const rep = await d.api.scanReport(m, r.sales ?? [], r.nextCursor ?? null);
-      if (rep.jobsCreated) await update(d, (st) => addLog(st, d.now(), `${HOST_TABLE[m].label}: ${rep.stored} new sale(s), ${rep.jobsCreated} delist(s) queued`));
-    } catch (e) { await handleApiError(d, e); }
+      const note = `${label}: sales scan saw ${(r.sales ?? []).length} sale(s), ${rep.stored} new, ${rep.jobsCreated} delist(s) queued`;
+      notes.push(note);
+      if (rep.jobsCreated || opts.salesOnly) await update(d, (st) => addLog(st, d.now(), note));
+    } catch (e) { notes.push(`${label}: ${(e as Error).message}`); await handleApiError(d, e); }
   }
+  return { notes };
 }
 
 async function handleApiError(d: Deps, e: unknown): Promise<{ skipped: string }> {

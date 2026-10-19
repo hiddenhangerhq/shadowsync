@@ -9,7 +9,7 @@ export default async function NewItem({ searchParams }: { searchParams: Promise<
         {error && <p className="err">A title is required.</p>}
         <label className="f">Title<input className="input" name="title" required /></label>
         <div className="grid c2">
-          <label className="f">SKU<input className="input" name="sku" /></label>
+          <label className="f">SKU<input className="input" name="sku" placeholder="TEST-1 for a test item" /></label>
           <label className="f">COGS ($)<input className="input" name="cogs" inputMode="decimal" /></label>
         </div>
         <label className="f">Purchase location<input className="input" name="purchaseLocation" /></label>

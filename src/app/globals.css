@@ -179,3 +179,4 @@ label.f .input{margin-top:4px}
 .jobrow{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .setup{border:var(--bw) dashed var(--warn);border-radius:var(--radius);padding:12px;background:var(--bg-2)}
 .setup b{color:var(--warn)}
+.okmsg{color:var(--ok);margin:0 0 10px}

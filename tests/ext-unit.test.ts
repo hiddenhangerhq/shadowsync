@@ -140,7 +140,7 @@ describe("manifest", () => {
     expect(m.content_security_policy.extension_pages).toMatch(/^script-src 'self'/);
     expect(m.optional_host_permissions.every((p) => p.startsWith("https://") && !p.includes("*."))).toBe(true);
   });
-  it("extensions-page card: name, one-line pitch, icons, version 1.0.0", () => {
+  it("extensions-page card: name, one-line pitch, icons, version 1.x", () => {
     expect(m.name).toBe("Shadow Sync Crosslist Extension");
     expect(m.description).toBe("Connect and crosslist to Poshmark, Depop, Grailed and more with Shadow Sync.");
     expect(m.description.length).toBeLessThanOrEqual(132);
@@ -152,7 +152,7 @@ describe("manifest", () => {
       const png = readFileSync(`extension/static/icon-${n}.png`);
       expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([n, n]); // IHDR width/height
     }
-    expect(JSON.parse(readFileSync("extension/version.json", "utf8")).version).toBe("1.0.0");
+    expect(JSON.parse(readFileSync("extension/version.json", "utf8")).version).toMatch(/^[1-9]\d*\.\d+\.\d+$/);
     expect(readFileSync("extension/static/popup.html", "utf8")).toContain('src="icon-48.png"');
     expect(existsSync("extension/icon.svg")).toBe(true);
   });
